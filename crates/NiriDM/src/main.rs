@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use ndm_core::layout::capture_layout;
-use ndm_core::paths::NiriDMPaths;
+use ndm_core::paths::{write_if_changed, NiriDMPaths};
 use ndm_core::Niri;
 
 #[derive(Parser)]
@@ -69,6 +69,27 @@ fn save_layouts(path: &PathBuf, layouts: &[ndm_core::layout::Layout]) -> Result<
     Ok(())
 }
 
+/// Write `monitors.kdl` for `layout`, skipping the write when it would be a
+/// no-op (niri reloads on every write). Returns whether it was written.
+fn write_monitors(
+    paths: &NiriDMPaths,
+    outputs: &[ndm_core::types::Output],
+    layout: &ndm_core::layout::Layout,
+) -> Result<bool> {
+    let kdl = ndm_core::kdl::generate_monitors_kdl(outputs, layout);
+    let written = write_if_changed(&paths.monitors, &kdl)?;
+    if written {
+        println!(
+            "applied layout `{}` -> {}",
+            layout.name,
+            paths.monitors.display()
+        );
+    } else {
+        println!("layout `{}` already applied", layout.name);
+    }
+    Ok(written)
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let paths = paths(&cli)?;
@@ -103,6 +124,13 @@ fn main() -> Result<()> {
             layouts.push(captured);
             save_layouts(&paths.layouts, &layouts)?;
             println!("captured layout `{name}` -> {}", paths.layouts.display());
+
+            // Capturing the current set means it now matches: apply it right
+            // away so the setup takes effect without a hotplug event.
+            if let Ok(layout) = ndm_core::layout::find_matching(&layouts, &outputs) {
+                write_monitors(&paths, &outputs, layout)?;
+                remind_include(&paths)?;
+            }
         }
         Cmd::Apply { name } => {
             let outputs = niri.outputs().context("querying niri outputs")?;
@@ -117,14 +145,7 @@ fn main() -> Result<()> {
                     .with_context(|| format!("layout `{name}` not found"))?
             };
 
-            let kdl = ndm_core::kdl::generate_monitors_kdl(&outputs, layout);
-            std::fs::write(&paths.monitors, &kdl)
-                .with_context(|| format!("failed to write {}", paths.monitors.display()))?;
-            println!(
-                "applied layout `{}` -> {}",
-                layout.name,
-                paths.monitors.display()
-            );
+            write_monitors(&paths, &outputs, layout)?;
             remind_include(&paths)?;
         }
         Cmd::Monitor { connector, state } => {
@@ -159,9 +180,7 @@ fn main() -> Result<()> {
                 .iter()
                 .find(|l| l.name == active)
                 .expect("layout was just edited");
-            let kdl = ndm_core::kdl::generate_monitors_kdl(&outputs, active_layout);
-            std::fs::write(&paths.monitors, &kdl)
-                .with_context(|| format!("failed to write {}", paths.monitors.display()))?;
+            write_monitors(&paths, &outputs, active_layout)?;
             println!("{connector} {state} (layout `{active}`)");
             remind_include(&paths)?;
         }

@@ -61,3 +61,20 @@ impl NiriDMPaths {
             .map_err(|e| NdError::Other(format!("failed to create {}: {e}", self.dir.display())))
     }
 }
+
+/// Write `contents` to `path` only when it differs from what is already there.
+///
+/// niri reloads an included file on every write, so rewriting identical bytes
+/// would cause a pointless (and briefly visible) reconfiguration. Returns
+/// `true` when the file was actually written.
+pub fn write_if_changed(path: &std::path::Path, contents: &str) -> Result<bool> {
+    let current = std::fs::read_to_string(path).unwrap_or_default();
+    if current == contents {
+        return Ok(false);
+    }
+    std::fs::write(path, contents).map_err(|e| NdError::Write {
+        path: path.to_path_buf(),
+        source: e,
+    })?;
+    Ok(true)
+}

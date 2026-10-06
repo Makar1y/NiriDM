@@ -6,7 +6,7 @@ pub enum NdError {
     #[error("failed to run `{0}`: {1}")]
     SpawnFailed(&'static str, #[source] std::io::Error),
 
-    #[error("`{0}` exited with status {1})")]
+    #[error("`{0}` exited with status {1}")]
     NonZeroExit(&'static str, String),
 
     #[error("failed to decode JSON from `{0}`: {1}")]

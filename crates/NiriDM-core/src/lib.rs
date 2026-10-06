@@ -5,10 +5,12 @@
 //! reachable through the modules below.
 
 mod error;
+pub mod hotplug;
 pub mod ipc;
 pub mod kdl;
 pub mod layout;
 pub mod paths;
+pub mod popup;
 pub mod types;
 
 pub use error::{NdError, Result};
