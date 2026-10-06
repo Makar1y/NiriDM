@@ -26,6 +26,8 @@ pub struct Output {
     pub is_custom_mode: bool,
     pub vrr_supported: bool,
     pub vrr_enabled: bool,
+    /// Whether this output currently has keyboard focus.
+    pub is_focused: bool,
     pub logical: Option<LogicalOutput>,
 }
 

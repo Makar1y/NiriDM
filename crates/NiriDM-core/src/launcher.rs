@@ -142,13 +142,8 @@ fn is_executable(path: &Path) -> bool {
 /// the launcher failed, or the timeout elapsed. A spawn failure is an error.
 pub fn prompt(bin: &Path, menu: &Menu, timeout: Duration) -> Result<Option<String>> {
     let style = Style::for_binary(&binary_name(bin));
-    let mut child = Command::new(bin)
-        .args(style.args(menu))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| NdError::SpawnFailed("popup launcher", e))?;
+    let mut child =
+        spawn_launcher(bin, &style, menu).map_err(|e| NdError::SpawnFailed("popup launcher", e))?;
 
     if let Some(mut stdin) = child.stdin.take() {
         let _ = write!(stdin, "{}", menu.items.join("\n"));
@@ -172,6 +167,32 @@ pub fn prompt(bin: &Path, menu: &Menu, timeout: Duration) -> Result<Option<Strin
     }
     let choice = out.trim_end_matches('\n');
     Ok((!choice.is_empty()).then(|| choice.to_owned()))
+}
+
+/// Spawn the launcher, retrying if the binary is briefly not runnable.
+///
+/// Tests write small launcher scripts and exec them immediately; under
+/// parallel load the exec can hit `ETXTBSY` ("text file busy") while another
+/// thread still holds the file open for writing. The same can happen in real
+/// use when a provider is being replaced. Both cases are transient.
+fn spawn_launcher(bin: &Path, style: &Style, menu: &Menu) -> std::io::Result<std::process::Child> {
+    let mut attempt = 0;
+    loop {
+        match Command::new(bin)
+            .args(style.args(menu))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(child) => return Ok(child),
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < 10 => {
+                attempt += 1;
+                std::thread::sleep(Duration::from_millis(10 * attempt));
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 /// Wait for `child`, killing it if it outlives `timeout`.

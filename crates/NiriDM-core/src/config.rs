@@ -7,13 +7,14 @@
 //!     remember-new-monitors true
 //!     poll-interval-ms 1000
 //!     settle-ms 750
+//!     mirror-tool "wl-mirror"
 //! }
 //! ```
 //!
 //! A missing file means "all defaults"; unknown keys are warnings so newer
 //! NiriDM versions can add options without breaking older files.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::error::{NdError, Result};
@@ -33,6 +34,8 @@ pub struct Prefs {
     pub poll_interval_ms: u64,
     /// How long a change must hold still before the daemon acts on it.
     pub settle_ms: u64,
+    /// The mirror tool `ndm mirror` spawns (default: `wl-mirror` from PATH).
+    pub mirror_tool: Option<PathBuf>,
 }
 
 impl Default for Prefs {
@@ -46,6 +49,7 @@ impl Default for Prefs {
             remember_new_monitors: true,
             poll_interval_ms: 1000,
             settle_ms: 750,
+            mirror_tool: None,
         }
     }
 }
@@ -120,6 +124,14 @@ impl Prefs {
                         prefs.poll_interval_ms = millis_arg(child, "poll-interval-ms")?
                     }
                     "settle-ms" => prefs.settle_ms = millis_arg(child, "settle-ms")?,
+                    "mirror-tool" => match child.args.as_slice() {
+                        [Val::Str(s)] => prefs.mirror_tool = Some(PathBuf::from(s)),
+                        _ => {
+                            return Err(NdError::Other(
+                                "`mirror-tool` needs a binary name or path".into(),
+                            ))
+                        }
+                    },
                     other => tracing::warn!("unknown config key `{other}`"),
                 }
             }
@@ -171,6 +183,7 @@ mod tests {
                 remember-new-monitors false
                 poll-interval-ms 250
                 settle-ms 100
+                mirror-tool "mymirror"
             }
             "#,
         )
@@ -183,6 +196,7 @@ mod tests {
         assert!(!p.remember_new_monitors);
         assert_eq!(p.poll_interval_ms, 250);
         assert_eq!(p.settle_ms, 100);
+        assert_eq!(p.mirror_tool.as_deref(), Some(Path::new("mymirror")));
     }
 
     #[test]

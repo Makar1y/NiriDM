@@ -45,11 +45,23 @@ impl Niri {
         serde_json::from_value(value).map_err(|e| NdError::Json("niri msg --json outputs", e))
     }
 
-    /// Run a niri action. Takes the action name and any `[key value]` pairs
-    /// that follow it (matching `niri msg action`'s `--key value` style).
-    pub fn action(&self, name: &str) -> Result<()> {
-        self.run_msg_data(&["action", name])?;
+    /// Run a niri action. `name` is the action, `args` are the `--key value`
+    /// pairs and positional arguments that follow it exactly as `niri msg
+    /// action <name>` expects them (e.g. `move-window-to-monitor --id 5 DP-9`).
+    pub fn action(&self, name: &str, args: &[&str]) -> Result<()> {
+        let mut full = Vec::with_capacity(args.len() + 1);
+        full.push("action");
+        full.push(name);
+        full.extend_from_slice(args);
+        self.run_msg_data(&full)?;
         Ok(())
+    }
+
+    /// Query the current window list; used to find an existing `wl-mirror`
+    /// window before the event stream reports it.
+    pub fn windows(&self) -> Result<Vec<crate::events::Window>> {
+        let value = self.run_msg(&["--json", "windows"])?;
+        serde_json::from_value(value).map_err(|e| NdError::Json("niri msg --json windows", e))
     }
 
     /// `niri msg --json <args...>`; returns the JSON inner content, unwrapping

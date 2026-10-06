@@ -177,12 +177,32 @@ impl EventStream {
 
     /// Connect using a specific `niri` binary (mainly for tests).
     pub fn open_with(bin: &Path) -> Result<Self> {
-        let mut child = Command::new(bin)
-            .args(["msg", "--json", "event-stream"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| NdError::SpawnFailed("niri msg event-stream", e))?;
+        // The test helpers write their fake `niri` script immediately before
+        // connecting; under parallel load the exec can hit ETXTBSY so retry
+        // transiently, same as `launcher::prompt`.
+        let mut child = None;
+        let mut attempt = 0;
+        while attempt < 10 {
+            match Command::new(bin)
+                .args(["msg", "--json", "event-stream"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+            {
+                Ok(c) => {
+                    child = Some(c);
+                    break;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                    attempt += 1;
+                    std::thread::sleep(Duration::from_millis(10 * attempt));
+                }
+                Err(e) => return Err(NdError::SpawnFailed("niri msg event-stream", e)),
+            }
+        }
+        let mut child = child.ok_or_else(|| {
+            NdError::SpawnFailed("niri msg event-stream", std::io::Error::other("ETXTBSY"))
+        })?;
 
         let stdout = child.stdout.take().expect("stdout was piped");
         let (tx, rx) = mpsc::channel();

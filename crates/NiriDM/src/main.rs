@@ -1,6 +1,7 @@
 //! `ndm` — NiriDM command line interface.
 
 use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -37,6 +38,19 @@ enum Cmd {
         connector: String,
         #[arg(value_parser = ["on", "off"])]
         state: String,
+    },
+    /// Mirror one output onto another with wl-mirror: spawn wl-mirror, then
+    /// steer its window to the target output fullscreen via `niri msg action`.
+    /// Exits when wl-mirror exits cleanly (e.g. its window is closed).
+    Mirror {
+        /// Output to mirror.
+        src: String,
+        /// Output to keep the mirror window on (default: focused, else the
+        /// first output other than `src`).
+        dst: Option<String>,
+        /// Mirror tool to use (overrides `mirror-tool` in config.kdl).
+        #[arg(long, value_name = "PATH")]
+        wl_mirror: Option<PathBuf>,
     },
     /// List saved layouts.
     List,
@@ -233,9 +247,134 @@ fn main() -> Result<()> {
         } => {
             run_popup(&paths, &niri, connector, provider, timeout)?;
         }
+        Cmd::Mirror {
+            src,
+            dst,
+            wl_mirror,
+        } => {
+            run_mirror(&paths, &niri, &src, dst.as_deref(), wl_mirror.as_deref())?;
+        }
     }
 
     Ok(())
+}
+
+/// `ndm mirror <src> [dst]`: run wl-mirror and keep its window useful.
+///
+/// wl-mirror mirrors a source output into a normal window, which is not what
+/// anyone wants attached to an extra display. NiriDM watches the event stream
+/// for that window and, the moment it appears, moves it onto `dst` and puts it
+/// fullscreen. When wl-mirror exits cleanly (its window was closed) this
+/// command ends; an unexpected wl-mirror death is restarted.
+fn run_mirror(
+    paths: &NiriDMPaths,
+    niri: &Niri,
+    src: &str,
+    dst: Option<&str>,
+    wl_mirror: Option<&std::path::Path>,
+) -> Result<()> {
+    use ndm_core::events::{Event, EventStream};
+
+    let prefs = Prefs::load(&paths.config)?;
+    let tool = wl_mirror
+        .map(PathBuf::from)
+        .or_else(|| prefs.mirror_tool.clone())
+        .unwrap_or_else(|| PathBuf::from("wl-mirror"));
+
+    // Resolve the target output before touching anything.
+    let outputs = niri.outputs().context("querying niri outputs")?;
+    let target = match dst {
+        Some(d) => {
+            if d == src {
+                bail!("cannot mirror an output onto itself");
+            }
+            if !outputs.iter().any(|o| o.name == d) {
+                bail!("output `{d}` is not connected");
+            }
+            d.to_owned()
+        }
+        None => {
+            let fallback = outputs.iter().find(|o| o.name != src);
+            match outputs.iter().find(|o| o.is_focused && o.name != src) {
+                Some(o) => o.name.clone(),
+                None => match fallback {
+                    Some(o) => o.name.clone(),
+                    None => bail!("need a second output to mirror onto"),
+                },
+            }
+        }
+    };
+
+    eprintln!("mirroring {src} -> {target} via {}", tool.display());
+    eprintln!("close the mirror window (or stop this process) to end the mirror");
+
+    let mut child = spawn_mirror(&tool, src)?;
+    let mut stream = EventStream::open()?;
+    let mut current_window: Option<u64> = None;
+
+    loop {
+        // An existing wl-mirror window (started before us, or our own) is
+        // steered right away; afterwards new ones are caught on the stream.
+        if current_window.is_none() {
+            if let Ok(windows) = niri.windows() {
+                if let Some(w) = windows
+                    .iter()
+                    .find(|w| w.matches_tool("wl-mirror", Some(child.id())))
+                {
+                    steer_window(niri, w.id, &target)?;
+                    current_window = Some(w.id);
+                }
+            }
+        }
+
+        match stream.next(Duration::from_secs(5))? {
+            Some(Event::WindowOpenedOrChanged { window })
+                if window.matches_tool("wl-mirror", Some(child.id())) =>
+            {
+                steer_window(niri, window.id, &target)?;
+                current_window = Some(window.id);
+            }
+            Some(Event::WindowClosed { id }) if current_window == Some(id) => {
+                tracing::debug!("mirror window {id} closed");
+                current_window = None;
+            }
+            Some(_) => {}
+            None => {}
+        }
+
+        match child.try_wait().context("waiting on wl-mirror")? {
+            Some(status) if status.success() => {
+                eprintln!("wl-mirror exited; mirroring stopped");
+                return Ok(());
+            }
+            Some(status) => {
+                tracing::warn!("wl-mirror died ({status}); restarting");
+                std::thread::sleep(Duration::from_secs(1));
+                child = spawn_mirror(&tool, src)?;
+                current_window = None;
+            }
+            None => {}
+        }
+    }
+}
+
+/// Move the given window onto `target` and fullscreen it.
+fn steer_window(niri: &Niri, id: u64, target: &str) -> Result<()> {
+    let id = id.to_string();
+    niri.action("move-window-to-monitor", &["--id", &id, target])?;
+    niri.action("fullscreen-window", &["--id", &id])?;
+    tracing::info!("steered wl-mirror window {id} to {target} fullscreen");
+    Ok(())
+}
+
+fn spawn_mirror(tool: &std::path::Path, src: &str) -> Result<Child> {
+    Command::new(tool)
+        .arg(src)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| format!("failed to start {}", tool.display()))
 }
 
 /// `ndm popup`: pick a quick arrangement for a new monitor and apply it.
@@ -366,6 +505,8 @@ config {
     // Daemon polling / debouncing.
     poll-interval-ms 1000
     settle-ms 750
+    // Mirror tool used by `ndm mirror` (default: wl-mirror from PATH).
+    mirror-tool \"wl-mirror\"
 }
 ";
         std::fs::write(&paths.config, template)
