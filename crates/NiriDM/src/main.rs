@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use ndm_core::layout::capture_layout;
-use ndm_core::paths::NdmPaths;
+use ndm_core::paths::NiriDMPaths;
 use ndm_core::Niri;
 
 #[derive(Parser)]
@@ -39,15 +39,15 @@ enum Cmd {
     Init,
 }
 
-fn paths(cli: &Cli) -> Result<NdmPaths> {
+fn paths(cli: &Cli) -> Result<NiriDMPaths> {
     let paths = match &cli.config_dir {
-        Some(dir) => NdmPaths {
+        Some(dir) => NiriDMPaths {
             config: dir.join("config.kdl"),
             layouts: dir.join("layouts.kdl"),
             monitors: dir.join("monitors.kdl"),
             dir: dir.clone(),
         },
-        None => NdmPaths::discover(),
+        None => NiriDMPaths::discover(),
     };
     paths.ensure_dirs()?;
     Ok(paths)
@@ -65,8 +65,7 @@ fn load_layouts(path: &PathBuf) -> Result<Vec<ndm_core::layout::Layout>> {
 
 fn save_layouts(path: &PathBuf, layouts: &[ndm_core::layout::Layout]) -> Result<()> {
     let text = ndm_core::kdl::emit_layouts(layouts);
-    std::fs::write(path, text)
-        .with_context(|| format!("failed to write {}", path.display()))?;
+    std::fs::write(path, text).with_context(|| format!("failed to write {}", path.display()))?;
     Ok(())
 }
 
@@ -121,7 +120,11 @@ fn main() -> Result<()> {
             let kdl = ndm_core::kdl::generate_monitors_kdl(&outputs, layout);
             std::fs::write(&paths.monitors, &kdl)
                 .with_context(|| format!("failed to write {}", paths.monitors.display()))?;
-            println!("applied layout `{}` -> {}", layout.name, paths.monitors.display());
+            println!(
+                "applied layout `{}` -> {}",
+                layout.name,
+                paths.monitors.display()
+            );
             remind_include(&paths)?;
         }
         Cmd::Monitor { connector, state } => {
@@ -129,29 +132,34 @@ fn main() -> Result<()> {
             if !outputs.iter().any(|o| o.name == connector) {
                 bail!("output `{connector}` is not connected");
             }
-            let layouts = load_layouts(&paths.layouts)?;
-            let mut layouts = layouts;
+            let mut layouts = load_layouts(&paths.layouts)?;
 
             // Turn the single connector on/off inside the active layout.
             let active = ndm_core::layout::find_matching(&layouts, &outputs)
                 .map_err(|e| anyhow::anyhow!("{e}"))?
                 .name
                 .clone();
-            let Some(layout) = layouts.iter_mut().find(|l| l.name == active) else {
-                bail!("no matching layout");
-            };
-            let Some(output) = layout.outputs.iter_mut().find(|o| o.connector == connector)
-            else {
-                bail!("layout `{active}` does not manage `{connector}`");
-            };
-            if state == "off" {
-                output.role = ndm_core::layout::Role::Off;
-            } else {
-                output.role = ndm_core::layout::Role::Normal;
+            {
+                let Some(layout) = layouts.iter_mut().find(|l| l.name == active) else {
+                    bail!("no matching layout");
+                };
+                let Some(output) = layout.outputs.iter_mut().find(|o| o.connector == connector)
+                else {
+                    bail!("layout `{active}` does not manage `{connector}`");
+                };
+                output.role = if state == "off" {
+                    ndm_core::layout::Role::Off
+                } else {
+                    ndm_core::layout::Role::Normal
+                };
             }
             save_layouts(&paths.layouts, &layouts)?;
 
-            let kdl = ndm_core::kdl::generate_monitors_kdl(&outputs, layout);
+            let active_layout = layouts
+                .iter()
+                .find(|l| l.name == active)
+                .expect("layout was just edited");
+            let kdl = ndm_core::kdl::generate_monitors_kdl(&outputs, active_layout);
             std::fs::write(&paths.monitors, &kdl)
                 .with_context(|| format!("failed to write {}", paths.monitors.display()))?;
             println!("{connector} {state} (layout `{active}`)");
@@ -175,21 +183,18 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn remind_include(paths: &NdmPaths) -> Result<()> {
-    let main = NdmPaths::niri_main_config();
+fn remind_include(paths: &NiriDMPaths) -> Result<()> {
+    let main = NiriDMPaths::niri_main_config();
     let line = format!("include optional=true \"{}\"", paths.monitors.display());
     let text = std::fs::read_to_string(&main).unwrap_or_default();
     if text.contains(&line) || text.contains("NiriDM/monitors.kdl") {
         return Ok(());
     }
-    println!(
-        "note: add to {}:\n  {line}",
-        main.display()
-    );
+    println!("note: add to {}:\n  {line}", main.display());
     Ok(())
 }
 
-fn init_files(paths: &NdmPaths) -> Result<()> {
+fn init_files(paths: &NiriDMPaths) -> Result<()> {
     paths.ensure_dirs()?;
 
     if !paths.layouts.exists() {
@@ -198,11 +203,8 @@ fn init_files(paths: &NdmPaths) -> Result<()> {
         println!("created {}", paths.layouts.display());
     }
     if !paths.config.exists() {
-        std::fs::write(
-            &paths.config,
-            "// NiriDM preferences.\n",
-        )
-        .with_context(|| format!("failed to write {}", paths.config.display()))?;
+        std::fs::write(&paths.config, "// NiriDM preferences.\n")
+            .with_context(|| format!("failed to write {}", paths.config.display()))?;
         println!("created {}", paths.config.display());
     }
     Ok(())

@@ -37,8 +37,7 @@ impl Niri {
     /// Query the connected outputs.
     pub fn outputs(&self) -> Result<Vec<Output>> {
         let value = self.run_msg(&["--json", "outputs"])?;
-        serde_json::from_value(value)
-            .map_err(|e| NdError::Json("niri msg --json outputs", e))
+        serde_json::from_value(value).map_err(|e| NdError::Json("niri msg --json outputs", e))
     }
 
     /// Run a niri action. Takes the action name and any `[key value]` pairs
@@ -52,8 +51,7 @@ impl Niri {
     /// the `{"Ok": ...}` / `{"Err": ...}` envelope that `niri msg` uses.
     pub fn run_msg(&self, args: &[&str]) -> Result<serde_json::Value> {
         let out = self.spawn(args)?;
-        let value = serde_json::from_str(&out)
-            .map_err(|e| NdError::Json("niri msg".into(), e))?;
+        let value = serde_json::from_str(&out).map_err(|e| NdError::Json("niri msg", e))?;
         unwrap_reply(value)
     }
 
@@ -61,8 +59,7 @@ impl Niri {
     /// (used by actions that take arguments).
     pub fn run_msg_data(&self, args: &[&str]) -> Result<serde_json::Value> {
         let out = self.spawn(args)?;
-        let value = serde_json::from_str(&out)
-            .map_err(|e| NdError::Json("niri msg".into(), e))?;
+        let value = serde_json::from_str(&out).map_err(|e| NdError::Json("niri msg", e))?;
         unwrap_reply(value)
     }
 
@@ -78,7 +75,7 @@ impl Niri {
             return Err(NdError::NonZeroExit(NIRI_NONZERO_ERR, stderr));
         }
 
-        Ok(String::from_utf8_lossy(&out.stdout).to_owned())
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 }
 

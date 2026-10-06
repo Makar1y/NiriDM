@@ -23,19 +23,26 @@ pub struct MonitorMatch {
 impl MonitorMatch {
     /// Does `output` satisfy every field of this clause?
     pub fn matches(&self, output: &Output) -> bool {
-        let name_ok = self.name.as_deref().map_or(true, |v| v.eq_ignore_ascii_case(&output.name));
-        let make_ok = self
-            .make
+        let name_ok = self
+            .name
             .as_deref()
-            .map_or(true, |v| output.make.as_deref().is_some_and(|m| m.eq_ignore_ascii_case(v)));
-        let model_ok = self
-            .model
-            .as_deref()
-            .map_or(true, |v| output.model.as_deref().is_some_and(|m| m.eq_ignore_ascii_case(v)));
+            .is_none_or(|v| v.eq_ignore_ascii_case(&output.name));
+        let make_ok = self.make.as_deref().is_none_or(|v| {
+            output
+                .make
+                .as_deref()
+                .is_some_and(|m| m.eq_ignore_ascii_case(v))
+        });
+        let model_ok = self.model.as_deref().is_none_or(|v| {
+            output
+                .model
+                .as_deref()
+                .is_some_and(|m| m.eq_ignore_ascii_case(v))
+        });
         let serial_ok = self
             .serial
             .as_deref()
-            .map_or(true, |v| v.eq_ignore_ascii_case(&output.serial));
+            .is_none_or(|v| v.eq_ignore_ascii_case(&output.serial));
         name_ok && make_ok && model_ok && serial_ok
     }
 
@@ -94,7 +101,11 @@ impl Layout {
     pub fn matches(&self, connected: &[Output]) -> bool {
         // Referenced connectors must be connected.
         let names: HashSet<&str> = connected.iter().map(|o| o.name.as_str()).collect();
-        if !self.outputs.iter().all(|o| names.contains(o.connector.as_str())) {
+        if !self
+            .outputs
+            .iter()
+            .all(|o| names.contains(o.connector.as_str()))
+        {
             return false;
         }
 
@@ -117,7 +128,10 @@ impl Layout {
         }
 
         if !self.any.is_empty() {
-            return self.any.iter().any(|c| connected.iter().any(|o| c.matches(o)));
+            return self
+                .any
+                .iter()
+                .any(|c| connected.iter().any(|o| c.matches(o)));
         }
 
         true
@@ -126,13 +140,19 @@ impl Layout {
 
 /// Build a layout from the current live state (used by `NiriDM capture`).
 pub fn capture_layout(name: &str, outputs: &[Output]) -> Layout {
-    let set = outputs.iter().map(|o| identity_clause(o)).collect();
+    let set = outputs.iter().map(identity_clause).collect();
     let mut managed = Vec::new();
     for o in outputs {
         let role = if o.is_on() { Role::Normal } else { Role::Off };
         managed.push(dump_output(o, role));
     }
-    Layout { name: name.to_owned(), set, any: Vec::new(), outputs: managed, workspaces: Vec::new() }
+    Layout {
+        name: name.to_owned(),
+        set,
+        any: Vec::new(),
+        outputs: managed,
+        workspaces: Vec::new(),
+    }
 }
 
 /// "Freeze" one live output into a ManagedOutput the way `NiriDM capture` stores it.
@@ -151,15 +171,27 @@ pub fn dump_output(o: &Output, role: Role) -> ManagedOutput {
 
 fn identity_clause(o: &Output) -> MonitorMatch {
     if !o.serial.is_empty() {
-        MonitorMatch { serial: Some(o.serial.clone()), ..Default::default() }
+        MonitorMatch {
+            serial: Some(o.serial.clone()),
+            ..Default::default()
+        }
     } else if let Some(model) = &o.model {
         if !model.is_empty() {
-            MonitorMatch { model: Some(model.clone()), ..Default::default() }
+            MonitorMatch {
+                model: Some(model.clone()),
+                ..Default::default()
+            }
         } else {
-            MonitorMatch { name: Some(o.name.clone()), ..Default::default() }
+            MonitorMatch {
+                name: Some(o.name.clone()),
+                ..Default::default()
+            }
         }
     } else {
-        MonitorMatch { name: Some(o.name.clone()), ..Default::default() }
+        MonitorMatch {
+            name: Some(o.name.clone()),
+            ..Default::default()
+        }
     }
 }
 
@@ -168,7 +200,7 @@ pub fn find_matching<'a>(layouts: &'a [Layout], connected: &[Output]) -> Result<
     layouts
         .iter()
         .find(|l| l.matches(connected))
-        .ok_or_else(|| crate::error::NdError::NoMatchingLayout(layouts.len()))
+        .ok_or(crate::error::NdError::NoMatchingLayout(layouts.len()))
 }
 
 #[cfg(test)]
@@ -181,7 +213,11 @@ mod tests {
             model: Some(model.into()),
             serial: serial.into(),
             current_mode: if on { Some(0) } else { None },
-            modes: vec![crate::types::Mode { width: 1920, height: 1080, refresh_rate_mhz: 144_000 }],
+            modes: vec![crate::types::Mode {
+                width: 1920,
+                height: 1080,
+                refresh_rate_mhz: 144_000,
+            }],
             ..Default::default()
         }
     }
@@ -190,7 +226,10 @@ mod tests {
     fn exact_set_requires_full_coverage() {
         let l = Layout {
             name: "dock".into(),
-            set: vec![MonitorMatch { serial: Some("A".into()), ..Default::default() }],
+            set: vec![MonitorMatch {
+                serial: Some("A".into()),
+                ..Default::default()
+            }],
             any: vec![],
             outputs: vec![ManagedOutput {
                 connector: "DP-1".into(),
@@ -204,7 +243,10 @@ mod tests {
             workspaces: vec![],
         };
         // Two monitors connected, layout only mentions one => no match.
-        let two = vec![tied_output("DP-1", "Dell", "A", true), tied_output("eDP-1", "Laptop", "B", true)];
+        let two = vec![
+            tied_output("DP-1", "Dell", "A", true),
+            tied_output("eDP-1", "Laptop", "B", true),
+        ];
         assert!(!l.matches(&two));
         // Single monitor, exact fit => match.
         let one = vec![tied_output("DP-1", "Dell", "A", true)];
@@ -217,8 +259,14 @@ mod tests {
             name: "ext".into(),
             set: vec![],
             any: vec![
-                MonitorMatch { model: Some("U2723QE".into()), ..Default::default() },
-                MonitorMatch { model: Some("P2723QE".into()), ..Default::default() },
+                MonitorMatch {
+                    model: Some("U2723QE".into()),
+                    ..Default::default()
+                },
+                MonitorMatch {
+                    model: Some("P2723QE".into()),
+                    ..Default::default()
+                },
             ],
             outputs: vec![ManagedOutput {
                 connector: "DP-1".into(),
@@ -239,7 +287,13 @@ mod tests {
     fn capture_builds_exact_set_and_preserves_settings() {
         let out = tied_output("eDP-1", "Laptop", "LAP123", true);
         let l = capture_layout("laptop", std::slice::from_ref(&out));
-        assert_eq!(l.set, vec![MonitorMatch { serial: Some("LAP123".into()), ..Default::default() }]);
+        assert_eq!(
+            l.set,
+            vec![MonitorMatch {
+                serial: Some("LAP123".into()),
+                ..Default::default()
+            }]
+        );
         assert_eq!(l.outputs[0].mode.as_deref(), Some("1920x1080@144.000"));
         assert!(l.outputs[0].enabled());
     }

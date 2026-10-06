@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use ndm_core::paths::NdmPaths;
+use ndm_core::paths::NiriDMPaths;
 use ndm_core::Niri;
 
 #[derive(Parser)]
@@ -33,7 +33,7 @@ fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let paths = NdmPaths::discover();
+    let paths = NiriDMPaths::discover();
     paths.ensure_dirs()?;
     let niri = Niri::new();
 
@@ -49,7 +49,7 @@ fn main() -> Result<()> {
     }
 }
 
-fn poll(niri: &Niri, paths: &NdmPaths) -> Result<()> {
+fn poll(niri: &Niri, paths: &NiriDMPaths) -> Result<()> {
     let outputs = niri.outputs().context("querying niri outputs")?;
     let names: Vec<&str> = outputs.iter().map(|o| o.name.as_str()).collect();
     tracing::debug!("connected: {names:?}");

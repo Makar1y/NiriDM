@@ -12,6 +12,7 @@ use serde::Deserialize;
 /// A single connector currently known to niri.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default)]
+#[derive(Default)]
 pub struct Output {
     pub name: String,
     pub make: Option<String>,
@@ -59,27 +60,10 @@ impl Output {
     }
 }
 
-impl Default for Output {
-    fn default() -> Self {
-        Self {
-            name: String::new(),
-            make: None,
-            model: None,
-            serial: String::new(),
-            physical_size: (0, 0),
-            modes: Vec::new(),
-            current_mode: None,
-            is_custom_mode: false,
-            vrr_supported: false,
-            vrr_enabled: false,
-            logical: None,
-        }
-    }
-}
-
 /// A single video mode offered by an output.
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
 #[serde(default)]
+#[derive(Default)]
 pub struct Mode {
     pub width: u32,
     pub height: u32,
@@ -87,18 +71,18 @@ pub struct Mode {
     pub refresh_rate_mhz: u32,
 }
 
-impl Default for Mode {
-    fn default() -> Self {
-        Self { width: 0, height: 0, refresh_rate_mhz: 0 }
-    }
-}
-
 impl fmt::Display for Mode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.refresh_rate_mhz == 0 {
             write!(f, "{}x{}", self.width, self.height)
         } else {
-            write!(f, "{}x{}@{}", self.width, self.height, display_hz(self.refresh_rate_mhz))
+            write!(
+                f,
+                "{}x{}@{}",
+                self.width,
+                self.height,
+                display_hz(self.refresh_rate_mhz)
+            )
         }
     }
 }
@@ -117,7 +101,14 @@ pub struct LogicalOutput {
 
 impl Default for LogicalOutput {
     fn default() -> Self {
-        Self { x: 0, y: 0, width: 0, height: 0, scale: 1.0, transform: Transform::Normal }
+        Self {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+            scale: 1.0,
+            transform: Transform::Normal,
+        }
     }
 }
 
@@ -237,7 +228,7 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(o.make, None);
-        assert_eq!(o.vrr_enabled, false);
+        assert!(!o.vrr_enabled);
         assert!(o.is_on());
         assert_eq!(o.current_mode().unwrap().to_string(), "1920x1080@143.912");
     }

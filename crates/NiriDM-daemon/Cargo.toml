@@ -10,7 +10,7 @@ name = "ndm-daemon"
 path = "src/main.rs"
 
 [dependencies]
-ndm-core = { path = "../ndm-core" }
+ndm-core = { path = "../NiriDM-core" }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

@@ -57,9 +57,7 @@ impl NiriDMPaths {
     }
 
     pub fn ensure_dirs(&self) -> Result<()> {
-        std::fs::create_dir_all(&self.dir).map_err(|e| NdError::Other(format!(
-            "failed to create {}: {e}",
-            self.dir.display()
-        )))
+        std::fs::create_dir_all(&self.dir)
+            .map_err(|e| NdError::Other(format!("failed to create {}: {e}", self.dir.display())))
     }
 }
