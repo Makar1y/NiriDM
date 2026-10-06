@@ -1,0 +1,16 @@
+[package]
+name = "ndm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "NiriDM command line interface"
+
+[[bin]]
+name = "ndm"
+path = "src/main.rs"
+
+[dependencies]
+ndm-core = { path = "../ndm-core" }
+clap = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }

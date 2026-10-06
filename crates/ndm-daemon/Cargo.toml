@@ -1,0 +1,17 @@
+[package]
+name = "ndm-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "NiriDM hotplug daemon"
+
+[[bin]]
+name = "ndm-daemon"
+path = "src/main.rs"
+
+[dependencies]
+ndm-core = { path = "../ndm-core" }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }

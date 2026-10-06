@@ -6,18 +6,16 @@
 //!   owns (`~/.config/NiriDM/monitors.kdl`, included from the main config with
 //!   `include optional=true`). It is a strict subset of niri's
 //!   `output { }` syntax and is the only file NiriDM ever rewrites.
-//! * Layouts NiriDM persists in `~/.config/NiriDM/layouts.kdl` (see
-//!   [`Layout`](crate::layout::Layout)). We parse that with a small hand-rolled
-//!   lexer/parser for the exact KDL subset NiriDM emits, so a hand-edited file is
-//!   understood without pulling in a full KDL implementation, and we emit it
-//!   with an equally small printer.
+//! * Layouts are persisted in `~/.config/NiriDM/layouts.kdl`. We parse that
+//!   with a small hand-rolled lexer/parser for the exact KDL subset NiriDM
+//!   emits, so a hand-edited file is understood without pulling in a full KDL
+//!   implementation, and we emit it with an equally small printer.
 
 use std::fmt::Write as _;
-use std::marker::PhantomData;
 
 use crate::error::{NdError, Result};
-use crate::layout::{ManagedOutput, MonitorMatch, Role, Transform};
-use crate::types::Output;
+use crate::layout::{Layout, ManagedOutput, MonitorMatch, Role};
+use crate::types::{Output, Transform};
 
 // ---------------------------------------------------------------------------
 // monitors.kdl (niri fragment)
@@ -111,33 +109,12 @@ fn parse_transform(s: &str) -> Result<Transform> {
 // layouts.kdl (NiriDM state)
 // ---------------------------------------------------------------------------
 
-const LAYOUTS_HEADER: &str =
-    "// NiriDM layouts file. A `layout` node becomes active when its monitors\n\
-     // match. `set` nodes form an exact set: every node must match a distinct\n\
-     // connected monitor and no monitor may be left over. `match` nodes are\n\
-     // OR-ed (kanshi style). Layouts are tried in file order.\n";
-
-const SAMPLE_LAYOUTS: &str = r#"layout "Docked" {
-    // Exact set: this layout applies only when these monitors are all there
-    // and nothing else is connected besides the laptop screen.
-    set serial="S4LMX3N00000"
-    set model="U2723QE"
-
-    output "DP-1" {
-        mode "3840x2160@143.912"
-        scale 1.0
-        transform "90"
-        position x=3840 y=0
-    }
-    output "DP-2" {
-        role mirror-of="DP-1"
-    }
-    output "eDP-1" {
-        off
-    }
-    workspace "Chat" output="DP-1"
-}
-"#;
+const LAYOUTS_HEADER: &str = "\
+// NiriDM layouts file. A `layout` node becomes active when its monitors
+// match. `set` nodes form an exact set: every node must match a distinct
+// connected monitor and no monitor may be left over. `match` nodes are
+// OR-ed (kanshi style). Layouts are tried in file order.
+";
 
 /// Serialise layouts to the layout file.
 pub fn emit_layouts(layouts: &[Layout]) -> String {
@@ -170,11 +147,7 @@ fn emit_layout(out: &mut String, layout: &Layout) {
         match &output.role {
             Role::Off => out.push_str("        off\n"),
             Role::MirrorOf(target) => {
-                let _ = writeln!(
-                    out,
-                    "        role mirror-of={:?}",
-                    kdl_escape(target)
-                );
+                let _ = writeln!(out, "        role mirror-of={:?}", kdl_escape(target));
             }
             Role::Normal => {}
         }
@@ -229,59 +202,14 @@ fn emit_monitor_match(out: &mut String, node: &str, clause: &MonitorMatch) {
     out.push('\n');
 }
 
-// ---------------------------------------------------------------------------
-// layouts.kdl parser (KDL subset)
-// ---------------------------------------------------------------------------
-
-/// Build a capturing layout from live outputs.
-pub fn capture_layout(name: &str, connected: &[Output]) -> Layout {
-    let set: Vec<MonitorMatch> = connected.iter().map(identity_clause).collect();
-    let outputs: Vec<ManagedOutput> =
-        connected.iter().map(dump_output).collect();
-
-    Layout { name: name.to_owned(), set, any: Vec::new(), outputs, workspaces: Vec::new() }
-}
-
-fn dump_output(o: &Output) -> ManagedOutput {
-    let on = o.is_on();
-    let logical = on.then_some(o.logical).flatten();
-    ManagedOutput {
-        connector: o.name.clone(),
-        mode: o.current_mode().map(|m| m.to_string()),
-        scale: logical.map(|l| l.scale),
-        transform: logical.map(|l| l.transform),
-        position: logical.map(|l| (l.x as i64, l.y as i64)),
-        vrr: o.vrr_enabled,
-        role: if on { Role::Normal } else { Role::Off },
-    }
-}
-
-/// Pick the strongest stable identity for a captured monitor: serial first,
-/// then model, then connector name.
-fn identity_clause(o: &Output) -> MonitorMatch {
-    if !o.serial.is_empty() {
-        MonitorMatch { serial: Some(o.serial.clone()), ..Default::default() }
-    } else if let Some(model) = &o.model {
-        if !model.is_empty() {
-            MonitorMatch { model: Some(model.clone()), ..Default::default() }
-        } else {
-            MonitorMatch { name: Some(o.name.clone()), ..Default::default() }
-        }
-    } else {
-        MonitorMatch { name: Some(o.name.clone()), ..Default::default() }
-    }
-}
-
-/// Find the first layout (in file order) that applies to `connected`.
-pub fn find_matching<'a, 'b>(
-    layouts: &'a [Layout],
-    connected: &'b [Output],
-) -> Option<&'a Layout> {
-    layouts.iter().find(|l| l.matches(connected))
+/// Parse a `layouts.kdl` document.
+pub fn parse_layouts(input: &str) -> Result<Vec<Layout>> {
+    let nodes = kdl_nodes(input)?;
+    nodes.into_iter().map(interpret_layout).collect()
 }
 
 // ---------------------------------------------------------------------------
-// Tokenizer
+// KDL subset parser
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]
@@ -300,16 +228,12 @@ enum Tok {
     RBrace,
 }
 
+#[derive(Debug)]
 struct Node {
     name: String,
     args: Vec<Val>,
     props: Vec<(String, Val)>,
     children: Vec<Node>,
-}
-
-fn parse_layouts(input: &str) -> Result<Vec<Layout>> {
-    let nodes = kdl_nodes(input)?;
-    nodes.into_iter().map(interpret_layout).collect()
 }
 
 fn interpret_layout(node: Node) -> Result<Layout> {
@@ -337,11 +261,7 @@ fn interpret_layout(node: Node) -> Result<Layout> {
             "workspace" => {
                 let ws = match child.args.as_slice() {
                     [Val::Str(s)] => s.clone(),
-                    _ => {
-                        return Err(NdError::Other(
-                            "`workspace` needs a string name".into(),
-                        ))
-                    }
+                    _ => return Err(NdError::Other("`workspace` needs a string name".into())),
                 };
                 let output = match child.props.iter().find(|(k, _)| k == "output") {
                     Some((_, Val::Str(s))) => s.clone(),
@@ -366,9 +286,7 @@ fn interpret_layout(node: Node) -> Result<Layout> {
 
 fn interpret_monitor_match(node: &Node, what: &str) -> Result<MonitorMatch> {
     if !node.args.is_empty() {
-        return Err(NdError::Other(format!(
-            "`{what}` takes no positional arguments"
-        )));
+        return Err(NdError::Other(format!("`{what}` takes no positional arguments")));
     }
     let mut m = MonitorMatch::default();
     for (k, v) in &node.props {
@@ -382,17 +300,11 @@ fn interpret_monitor_match(node: &Node, what: &str) -> Result<MonitorMatch> {
             "make" => m.make = Some(s.clone()),
             "model" => m.model = Some(s.clone()),
             "serial" => m.serial = Some(s.clone()),
-            _ => {
-                return Err(NdError::Other(format!(
-                    "unknown `{what}` property `{k}`"
-                )))
-            }
+            _ => return Err(NdError::Other(format!("unknown `{what}` property `{k}`"))),
         }
     }
-    if m.name.is_none() && m.make.is_none() && m.model.is_none() && m.serial.is_none() {
-        return Err(NdError::Other(format!(
-            "`{what}` needs at least one property"
-        )));
+    if m.is_empty() {
+        return Err(NdError::Other(format!("`{what}` needs at least one property")));
     }
     Ok(m)
 }
@@ -439,9 +351,7 @@ fn interpret_output(node: &Node) -> Result<ManagedOutput> {
             "transform" => {
                 transform = Some(match child.args.as_slice() {
                     [Val::Str(s)] => parse_transform(s)?,
-                    _ => {
-                        return Err(NdError::Other("`transform` needs a string argument".into()))
-                    }
+                    _ => return Err(NdError::Other("`transform` needs a string argument".into())),
                 });
             }
             "position" => {
@@ -457,9 +367,7 @@ fn interpret_output(node: &Node) -> Result<ManagedOutput> {
             }
             "variable-refresh-rate" => vrr = true,
             other => {
-                return Err(NdError::Other(format!(
-                    "unknown `output` entry `{other}`"
-                )))
+                return Err(NdError::Other(format!("unknown `output` entry `{other}`")))
             }
         }
     }
@@ -467,108 +375,7 @@ fn interpret_output(node: &Node) -> Result<ManagedOutput> {
     Ok(ManagedOutput { connector, mode, scale, transform, position, vrr, role })
 }
 
-// -- parser -- //
-
-fn kdl_nodes(input: &str) -> Result<Vec<Node>> {
-    let tokens = kdl_lex(input)?;
-    Parser::new(tokens).nodes()
-}
-
-struct Parser {
-    tokens: Vec<Tok>,
-    pos: usize,
-}
-
-impl Parser {
-    fn new(tokens: Vec<Tok>) -> Self {
-        Self { tokens, pos: 0 }
-    }
-
-    fn peek(&self) -> Option<&Tok> {
-        self.tokens.get(self.pos)
-    }
-
-    fn next(&mut self) -> Option<Tok> {
-        let t = self.tokens.get(self.pos).cloned();
-        if t.is_some() {
-            self.pos += 1;
-        }
-        t
-    }
-
-    fn nodes(&mut self) -> Result<Vec<Node>> {
-        let mut out = Vec::new();
-        while self.peek().is_some() {
-            out.push(self.node()?);
-        }
-        Ok(out)
-    }
-
-    fn node(&mut self) -> Result<Node> {
-        let Some(Tok::Ident(name)) = self.next() else {
-            return Err(NdError::Other("expected an identifier (node name)".into()));
-        };
-
-        let mut args = Vec::new();
-        let mut props = Vec::new();
-
-        loop {
-            match self.peek() {
-                Some(Tok::Str(_)) | Some(Tok::Num(_)) => {
-                    let next = self.next().unwrap();
-                    match next {
-                        Tok::Str(s) => args.push(Val::Str(s)),
-                        Tok::Num(n) => args.push(Val::Num(n)),
-                        _ => unreachable!(),
-                    }
-                }
-                Some(Tok::Ident(k)) => {
-                    // `ident =` starts a property; a plain `ident` ends this
-                    // (possibly childless) node and the sibling begins.
-                    if matches!(self.tokens.get(self.pos + 1), Some(Tok::Eq)) {
-                        let k = k.clone();
-                        self.pos += 2;
-                        let v = match self.next() {
-                            Some(Tok::Str(s)) => Val::Str(s),
-                            Some(Tok::Num(n)) => Val::Num(n),
-                            other => {
-                                return Err(NdError::Other(format!(
-                                    "expected a value after `{k}=`, found {other:?}"
-                                )))
-                            }
-                        };
-                        props.push((k, v));
-                    } else {
-                        return Ok(Node { name, args, props, children: Vec::new() });
-                    }
-                }
-                Some(Tok::LBrace) => {
-                    self.next();
-                    let mut children = Vec::new();
-                    loop {
-                        match self.peek() {
-                            Some(Tok::RBrace) => {
-                                self.next();
-                                break;
-                            }
-                            Some(_) => children.push(self.node()?),
-                            None => {
-                                return Err(NdError::Other("unclosed `{{` block".into()))
-                            }
-                        }
-                    }
-                    return Ok(Node { name, args, props, children });
-                }
-                Some(Tok::Eq) => {
-                    return Err(NdError::Other("stray `=` in layouts file".into()))
-                }
-                Some(Tok::RBrace) | None => {
-                    return Ok(Node { name, args, props, children: Vec::new() })
-                }
-            }
-        }
-    }
-}
+// -- lexer -- //
 
 fn kdl_lex(input: &str) -> Result<Vec<Tok>> {
     let chars: Vec<char> = input.chars().collect();
@@ -618,29 +425,26 @@ fn kdl_lex(input: &str) -> Result<Vec<Tok>> {
             }
             toks.push(Tok::Str(s));
         } else if c.is_ascii_digit() || c == '-' {
-            let mut j = i;
-            if chars[j] == '-' {
-                j += 1;
+            let start = i;
+            if c == '-' {
+                i += 1;
             }
-            while j < chars.len() && (chars[j].is_ascii_digit() || chars[j] == '.') {
-                j += 1;
+            while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
+                i += 1;
             }
-            let text: String = chars[i..j].iter().collect();
+            let text: String = chars[start..i].iter().collect();
             let n: f64 = text
                 .parse()
                 .map_err(|_| NdError::Other(format!("invalid number `{text}`")))?;
             toks.push(Tok::Num(n));
-            i = j;
         } else if c.is_alphabetic() || c == '_' {
-            let mut j = i;
-            while j < chars.len()
-                && (chars[j].is_alphanumeric() || chars[j] == '_' || chars[j] == '-')
+            let start = i;
+            while i < chars.len()
+                && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '-')
             {
-                j += 1;
+                i += 1;
             }
-            let text: String = chars[i..j].iter().collect();
-            toks.push(Tok::Ident(text));
-            i = j;
+            toks.push(Tok::Ident(chars[start..i].iter().collect()));
         } else {
             return Err(NdError::Other(format!(
                 "unexpected character `{c}` in layouts file"
@@ -650,14 +454,126 @@ fn kdl_lex(input: &str) -> Result<Vec<Tok>> {
     Ok(toks)
 }
 
+// -- parser -- //
+
+fn kdl_nodes(input: &str) -> Result<Vec<Node>> {
+    let tokens = kdl_lex(input)?;
+    Parser { tokens, pos: 0 }.nodes()
+}
+
+struct Parser {
+    tokens: Vec<Tok>,
+    pos: usize,
+}
+
+impl Parser {
+    fn peek(&self) -> Option<&Tok> {
+        self.tokens.get(self.pos)
+    }
+
+    fn nodes(&mut self) -> Result<Vec<Node>> {
+        let mut out = Vec::new();
+        while self.peek().is_some() {
+            out.push(self.node()?);
+        }
+        Ok(out)
+    }
+
+    fn node(&mut self) -> Result<Node> {
+        let Some(Tok::Ident(name)) = self.tokens.get(self.pos).cloned() else {
+            return Err(NdError::Other("expected an identifier (node name)".into()));
+        };
+        self.pos += 1;
+
+        let mut args = Vec::new();
+        let mut props = Vec::new();
+
+        loop {
+            match self.peek() {
+                Some(Tok::Str(_)) | Some(Tok::Num(_)) => {
+                    let tok = self.tokens[self.pos].clone();
+                    self.pos += 1;
+                    match tok {
+                        Tok::Str(s) => args.push(Val::Str(s)),
+                        Tok::Num(n) => args.push(Val::Num(n)),
+                        _ => unreachable!(),
+                    }
+                }
+                Some(Tok::Ident(k)) => {
+                    // `ident =` starts a property; a plain `ident` ends this
+                    // (possibly childless) node and the sibling begins.
+                    if matches!(self.tokens.get(self.pos + 1), Some(Tok::Eq)) {
+                        let k = k.clone();
+                        self.pos += 2;
+                        let v = match self.tokens.get(self.pos).cloned() {
+                            Some(Tok::Str(s)) => Val::Str(s),
+                            Some(Tok::Num(n)) => Val::Num(n),
+                            other => {
+                                return Err(NdError::Other(format!(
+                                    "expected a value after `{k}=`, found {other:?}"
+                                )))
+                            }
+                        };
+                        self.pos += 1;
+                        props.push((k, v));
+                    } else {
+                        return Ok(Node { name, args, props, children: Vec::new() });
+                    }
+                }
+                Some(Tok::LBrace) => {
+                    self.pos += 1;
+                    let mut children = Vec::new();
+                    loop {
+                        match self.peek() {
+                            Some(Tok::RBrace) => {
+                                self.pos += 1;
+                                break;
+                            }
+                            Some(_) => children.push(self.node()?),
+                            None => return Err(NdError::Other("unclosed `{` block".into())),
+                        }
+                    }
+                    return Ok(Node { name, args, props, children });
+                }
+                Some(Tok::Eq) => return Err(NdError::Other("stray `=` in layouts file".into())),
+                Some(Tok::RBrace) | None => {
+                    return Ok(Node { name, args, props, children: Vec::new() })
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const SAMPLE: &str = r#"
+layout "Docked" {
+    set serial="S4LMX3N00000"
+    set model="U2723QE"
+
+    output "DP-1" {
+        mode "3840x2160@143.912"
+        scale 1.0
+        transform "90"
+        position x=3840 y=0
+        variable-refresh-rate
+    }
+    output "DP-2" {
+        role mirror-of="DP-1"
+    }
+    output "eDP-1" {
+        off
+    }
+    workspace "Chat" output="DP-1"
+}
+"#;
+
     #[test]
     fn parses_sample_layout() {
-        let layouts = parse_layouts(SAMPLE_LAYOUTS).unwrap();
-        assert_eq!(layouts.len(), 1PlaceHolder);
+        let layouts = parse_layouts(SAMPLE).unwrap();
+        assert_eq!(layouts.len(), 1);
         let l = &layouts[0];
         assert_eq!(l.name, "Docked");
         assert_eq!(l.set.len(), 2);
@@ -670,56 +586,48 @@ mod tests {
         assert_eq!(dp1.scale, Some(1.0));
         assert_eq!(dp1.transform, Some(Transform::Deg90));
         assert_eq!(dp1.position, Some((3840, 0)));
+        assert!(dp1.vrr);
 
-        assert!(matches!(l.outputs[1].role, Role::MirrorOf(ref t) if t == "DP-1"));
+        assert!(matches!(&l.outputs[1].role, Role::MirrorOf(t) if t == "DP-1"));
         assert!(matches!(l.outputs[2].role, Role::Off));
         assert_eq!(l.workspaces, vec![("Chat".to_string(), "DP-1".to_string())]);
     }
 
     #[test]
-    fn captures_current_state() {
-        let o = Output {
-            name: "eDP-1".into(),
-            serial: "LAP1234".into(),
-            model: Some("B140HAN".into()),
-            vrr_enabled: true,
-            current_mode: Some(0),
-            modes: vec![crate::types::Mode {
-                width: 1920,
-                height: 1080,
-                refresh_rate_mhz: 144_000,
-            }],
-            logical: Some(crate::types::LogicalOutput {
-                x: 0,
-                y: 0,
-                width: 1920,
-                height: 1080,
-                scale: 1.25,
-                transform: Transform::Normal,
-            }),
-        };
-        let l = capture_layout("Laptop", std::slice::from_ref(&o));
-        assert_eq!(l.set, vec![MonitorMatch { serial: Some("LAP1234".into()), ..Default::default() }]);
-        assert_eq!(l.outputs[0].mode.as_deref(), Some("1920x1080@144.000"));
-        assert_eq!(l.outputs[0].scale, Some(1.25));
-        assert!(l.outputs[0].vrr);
-    }
-
-    #[test]
-    fn round_trips_emission() {
-        let layouts = parse_layouts(SAMPLE_LAYOUTS).unwrap();
+    fn round_trips_emit_and_parse() {
+        let layouts = parse_layouts(SAMPLE).unwrap();
         let emitted = emit_layouts(&layouts);
         let reparsed = parse_layouts(&emitted).unwrap();
         assert_eq!(layouts, reparsed);
     }
 
     #[test]
-    fn escaped_connector_round_trips() {
-        let l = parse_layouts(SAMPLE_LAYOUTS).unwrap();
-        let mut l2 = l[0].clone();
-        l2.outputs[0].connector = "we\"ird\\name".into();
-        let emitted = emit_layouts(&[l2.clone()]);
+    fn escaping_survives_quotes_and_backslashes() {
+        let mut layouts = parse_layouts(SAMPLE).unwrap();
+        layouts[0].outputs[0].connector = "we\"ird\\name".into();
+        let emitted = emit_layouts(&layouts);
         let reparsed = parse_layouts(&emitted).unwrap();
-        assert_eq!(reparsed[0].outputs[0].connector, l2.outputs[0].connector);
+        assert_eq!(layouts, reparsed);
+    }
+
+    #[test]
+    fn generates_off_for_unmanaged_connector() {
+        let connected = vec![
+            Output { name: "DP-1".into(), ..Default::default() },
+            Output { name: "eDP-1".into(), ..Default::default() },
+        ];
+        let layouts = parse_layouts(SAMPLE).unwrap();
+        let kdl = generate_monitors_kdl(&connected, &layouts[0]);
+
+        // Layout covers DP-1, DP-2, eDP-1; only DP-1 and eDP-1 are present.
+        assert!(kdl.contains("output \"DP-1\""));
+        assert!(kdl.contains("output \"eDP-1\""));
+        assert!(!kdl.contains("output \"DP-2\""));
+        assert!(kdl.contains("mode \"3840x2160@143.912\""));
+        assert!(kdl.contains("position x=3840 y=0"));
+        assert!(kdl.contains("transform \"90\""));
+        assert!(kdl.contains("variable-refresh-rate"));
+        // eDP-1 is Role::Off => rendered as `off`.
+        assert!(kdl.contains("off"));
     }
 }
