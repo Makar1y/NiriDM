@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use ndm_core::config::Prefs;
 use ndm_core::hotplug::{fingerprint, Debounce};
 use ndm_core::kdl::{generate_monitors_kdl, parse_layouts};
 use ndm_core::layout::{find_matching, Layout};
@@ -21,21 +22,24 @@ use ndm_core::Niri;
 #[derive(Parser)]
 #[command(name = "ndm-daemon", about = "NiriDM hotplug daemon", version)]
 struct Cli {
-    /// Poll interval in milliseconds.
-    #[arg(long, default_value_t = 1000)]
-    poll_ms: u64,
+    /// Poll interval in milliseconds (default: `poll-interval-ms` in config.kdl).
+    #[arg(long, value_name = "MS")]
+    poll_ms: Option<u64>,
 
     /// How long a change must hold still before it is applied, in
-    /// milliseconds (monitors enumerate in stages).
-    #[arg(long, default_value_t = 750)]
-    settle_ms: u64,
+    /// milliseconds — monitors enumerate in stages (default: `settle-ms`).
+    #[arg(long, value_name = "MS")]
+    settle_ms: Option<u64>,
 
     /// Command to run when no saved layout matches the connected monitors
-    /// (expects the chosen action on stdout). Default: log a warning.
-    ///
-    /// Milestone 3 ships `ndm popup` as the intended value.
-    #[arg(long)]
+    /// (expects the chosen action on stdout). Defaults to the `ndm` binary
+    /// next to this one, so `ndm popup` is used when available.
+    #[arg(long, value_name = "CMD", conflicts_with = "no_popup")]
     popup_cmd: Option<PathBuf>,
+
+    /// Never prompt; log an unmatched monitor set instead.
+    #[arg(long, conflicts_with = "popup_cmd")]
+    no_popup: bool,
 
     /// Poll once, apply immediately, and exit (useful for testing).
     #[arg(long)]
@@ -53,13 +57,45 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let paths = NiriDMPaths::discover();
     paths.ensure_dirs()?;
+    let prefs = Prefs::load(&paths.config)?;
     let niri = Niri::new();
-    let popup: Box<dyn PopupProvider> = match &cli.popup_cmd {
-        Some(cmd) => Box::new(CommandPopup { cmd: cmd.clone() }),
-        None => Box::new(LogPopup),
+
+    let poll = Duration::from_millis(cli.poll_ms.unwrap_or(prefs.poll_interval_ms));
+    let settle = Duration::from_millis(cli.settle_ms.unwrap_or(prefs.settle_ms));
+    tracing::info!(
+        "polling every {poll:?}, settling for {settle:?} (from {})",
+        paths.config.display()
+    );
+
+    let popup: Box<dyn PopupProvider> = if cli.no_popup {
+        Box::new(LogPopup)
+    } else {
+        let cmd = cli.popup_cmd.clone().or_else(|| sibling_binary("ndm"));
+        match cmd {
+            Some(cmd) => {
+                // A user-supplied command is the complete command; the
+                // built-in helper is `ndm popup` and needs its subcommand.
+                let is_ndm = cli.popup_cmd.is_none();
+                Box::new(CommandPopup {
+                    cmd,
+                    args: if is_ndm {
+                        vec!["popup".to_owned()]
+                    } else {
+                        Vec::new()
+                    },
+                    // The popup enforces its own (config.kdl) timeout; this is
+                    // the outer safety net so a wedged launcher can't stall us.
+                    timeout: prefs.popup_timeout + Duration::from_secs(10),
+                })
+            }
+            None => {
+                tracing::warn!("no popup helper found; use --popup-cmd or --no-popup");
+                Box::new(LogPopup)
+            }
+        }
     };
 
-    let mut debounce = Debounce::new(Duration::from_millis(cli.settle_ms));
+    let mut debounce = Debounce::new(settle);
     let mut previous: Vec<String> = Vec::new();
 
     loop {
@@ -70,7 +106,7 @@ fn main() -> Result<()> {
                 if cli.once {
                     return Err(e.into());
                 }
-                sleep(&cli);
+                std::thread::sleep(poll);
                 continue;
             }
         };
@@ -102,12 +138,15 @@ fn main() -> Result<()> {
         if cli.once {
             return Ok(());
         }
-        sleep(&cli);
+        std::thread::sleep(poll);
     }
 }
 
-fn sleep(cli: &Cli) {
-    std::thread::sleep(Duration::from_millis(cli.poll_ms));
+/// A sibling binary of this executable, e.g. `ndm` next to `ndm-daemon`.
+fn sibling_binary(name: &str) -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let sibling = exe.with_file_name(name);
+    sibling.is_file().then_some(sibling)
 }
 
 /// One step of the state machine: auto-apply the matching layout, and — only
@@ -136,19 +175,29 @@ fn step(
                 return Ok(());
             };
             tracing::debug!("{e}");
-            let new = outputs
+            let new: Vec<String> = outputs
                 .iter()
                 .filter(|o| !previous.iter().any(|p| p == &o.name))
                 .map(|o| o.name.clone())
                 .collect();
+            // An unrecognised set with nothing newly plugged in (cables
+            // shuffled between known monitors): there is no decision to make.
+            if new.is_empty() {
+                tracing::warn!(
+                    "no matching layout and no new monitor; leaving outputs as they are"
+                );
+                return Ok(());
+            }
             let ctx = PopupContext {
                 connected: outputs.to_vec(),
                 new,
                 layouts: layouts.iter().map(|l| l.name.clone()).collect(),
             };
             match popup.show(&ctx) {
-                Ok(Some(action)) => {
-                    tracing::info!("popup chose `{action}` (applied in Milestone 3)");
+                Ok(Some(choice)) => {
+                    tracing::info!(
+                        "popup chose `{choice}`; the layout is saved, next poll converges"
+                    );
                 }
                 Ok(None) => tracing::debug!("popup dismissed; leaving outputs as they are"),
                 Err(e) => tracing::warn!("popup failed: {e:#}"),

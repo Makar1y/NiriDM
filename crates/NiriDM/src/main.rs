@@ -1,11 +1,16 @@
 //! `ndm` — NiriDM command line interface.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
+use ndm_core::action::Action;
+use ndm_core::config::Prefs;
+use ndm_core::launcher::{self, Menu};
 use ndm_core::layout::capture_layout;
 use ndm_core::paths::{write_if_changed, NiriDMPaths};
+use ndm_core::popup::PopupContext;
 use ndm_core::Niri;
 
 #[derive(Parser)]
@@ -37,6 +42,17 @@ enum Cmd {
     List,
     /// Write the default config files if missing.
     Init,
+    /// Show the quick-setup popup for a monitor (the daemon runs this).
+    Popup {
+        /// Monitor to configure. Defaults to `$NDM_NEW` when run by the daemon.
+        connector: Option<String>,
+        /// Launcher to use instead of the configured chain.
+        #[arg(long, value_name = "NAME_OR_PATH")]
+        provider: Option<String>,
+        /// Popup timeout in seconds (overrides `config.kdl`).
+        #[arg(long)]
+        timeout: Option<u64>,
+    },
 }
 
 fn paths(cli: &Cli) -> Result<NiriDMPaths> {
@@ -77,7 +93,11 @@ fn write_monitors(
     layout: &ndm_core::layout::Layout,
 ) -> Result<bool> {
     let kdl = ndm_core::kdl::generate_monitors_kdl(outputs, layout);
-    let written = write_if_changed(&paths.monitors, &kdl)?;
+    Ok(write_if_changed(&paths.monitors, &kdl)?)
+}
+
+/// Feedback line for commands whose stdout is theirs to use.
+fn report_applied(paths: &NiriDMPaths, layout: &ndm_core::layout::Layout, written: bool) {
     if written {
         println!(
             "applied layout `{}` -> {}",
@@ -87,7 +107,6 @@ fn write_monitors(
     } else {
         println!("layout `{}` already applied", layout.name);
     }
-    Ok(written)
 }
 
 fn main() -> Result<()> {
@@ -128,7 +147,8 @@ fn main() -> Result<()> {
             // Capturing the current set means it now matches: apply it right
             // away so the setup takes effect without a hotplug event.
             if let Ok(layout) = ndm_core::layout::find_matching(&layouts, &outputs) {
-                write_monitors(&paths, &outputs, layout)?;
+                let written = write_monitors(&paths, &outputs, layout)?;
+                report_applied(&paths, layout, written);
                 remind_include(&paths)?;
             }
         }
@@ -145,7 +165,8 @@ fn main() -> Result<()> {
                     .with_context(|| format!("layout `{name}` not found"))?
             };
 
-            write_monitors(&paths, &outputs, layout)?;
+            let written = write_monitors(&paths, &outputs, layout)?;
+            report_applied(&paths, layout, written);
             remind_include(&paths)?;
         }
         Cmd::Monitor { connector, state } => {
@@ -197,8 +218,110 @@ fn main() -> Result<()> {
             init_files(&paths)?;
             remind_include(&paths)?;
         }
+        Cmd::Popup {
+            connector,
+            provider,
+            timeout,
+        } => {
+            run_popup(&paths, &niri, connector, provider, timeout)?;
+        }
     }
 
+    Ok(())
+}
+
+/// `ndm popup`: pick a quick arrangement for a new monitor and apply it.
+///
+/// stdout carries exactly one line — the chosen action — because the daemon
+/// parses it. Everything else goes to stderr.
+fn run_popup(
+    paths: &NiriDMPaths,
+    niri: &Niri,
+    connector: Option<String>,
+    provider: Option<String>,
+    timeout: Option<u64>,
+) -> Result<()> {
+    let prefs = Prefs::load(&paths.config)?;
+    let outputs = niri.outputs().context("querying niri outputs")?;
+
+    // Which monitor is this about?
+    let new: Vec<String> = match connector {
+        Some(c) => vec![c],
+        None => {
+            let from_env = std::env::var("NDM_NEW").unwrap_or_default();
+            let env: Vec<String> = from_env.split_whitespace().map(str::to_owned).collect();
+            if env.is_empty() {
+                bail!("usage: ndm popup <connector>  (the daemon passes $NDM_NEW)");
+            }
+            env
+        }
+    };
+    let target = new[0].clone();
+    if !outputs.iter().any(|o| o.name == target) {
+        bail!("output `{target}` is not connected");
+    }
+
+    let layouts = load_layouts(&paths.layouts)?;
+    let ctx = PopupContext {
+        connected: outputs,
+        new,
+        layouts: layouts.iter().map(|l| l.name.clone()).collect(),
+    };
+
+    let menu = Menu {
+        prompt: format!("NiriDM · {}", ctx.describe(&target)),
+        items: Action::ALL.iter().map(|a| a.label(&target)).collect(),
+    };
+
+    let bin = match &provider {
+        Some(p) if p.contains('/') => PathBuf::from(p),
+        Some(p) => launcher::detect(std::slice::from_ref(p), std::env::var_os("PATH").as_deref())
+            .with_context(|| format!("launcher `{p}` not found in PATH"))?,
+        None => launcher::detect(&prefs.popup_providers, std::env::var_os("PATH").as_deref())
+            .with_context(|| {
+                format!(
+                    "no popup provider found (tried: {})",
+                    prefs.popup_providers.join(", ")
+                )
+            })?,
+    };
+
+    let limit = timeout
+        .map(Duration::from_secs)
+        .unwrap_or(prefs.popup_timeout);
+    let Some(choice) = launcher::prompt(&bin, &menu, limit).context("running the popup")? else {
+        eprintln!("popup dismissed (or timed out)");
+        return Ok(());
+    };
+    let Some(action) = Action::from_label(&choice) else {
+        bail!("launcher returned unknown choice {choice:?}");
+    };
+
+    let layout = action.synthesize(&ctx)?;
+    eprintln!("{} → {}", ctx.describe(&target), action.label(&target));
+
+    if prefs.remember_new_monitors {
+        let mut layouts = layouts;
+        layouts.retain(|l| l.name != layout.name);
+        let name = layout.name.clone();
+        layouts.push(layout.clone());
+        save_layouts(&paths.layouts, &layouts)?;
+        eprintln!("saved layout `{name}`");
+    }
+
+    let written = write_monitors(paths, &ctx.connected, &layout)?;
+    eprintln!(
+        "{}",
+        if written {
+            format!("applied `{}`", layout.name)
+        } else {
+            format!("layout `{}` already applied", layout.name)
+        }
+    );
+    remind_include(paths)?;
+
+    // The daemon reads this line; nothing else may reach stdout.
+    println!("{}", action.label(&target));
     Ok(())
 }
 
@@ -209,7 +332,7 @@ fn remind_include(paths: &NiriDMPaths) -> Result<()> {
     if text.contains(&line) || text.contains("NiriDM/monitors.kdl") {
         return Ok(());
     }
-    println!("note: add to {}:\n  {line}", main.display());
+    eprintln!("note: add to {}:\n  {line}", main.display());
     Ok(())
 }
 
@@ -222,7 +345,22 @@ fn init_files(paths: &NiriDMPaths) -> Result<()> {
         println!("created {}", paths.layouts.display());
     }
     if !paths.config.exists() {
-        std::fs::write(&paths.config, "// NiriDM preferences.\n")
+        let template = "\
+// NiriDM preferences. Every key is optional; the values below are the
+// defaults. This file is only created when missing, so edit freely.
+config {
+    // Launchers tried in order when a new monitor needs a decision.
+    popup-providers \"fuzzel\" \"wofi\" \"bemenu\" \"yad\" \"zenity\" \"dmenu\"
+    // Seconds the popup waits before giving up.
+    popup-timeout 20
+    // Save the chosen arrangement so this monitor set never asks again.
+    remember-new-monitors true
+    // Daemon polling / debouncing.
+    poll-interval-ms 1000
+    settle-ms 750
+}
+";
+        std::fs::write(&paths.config, template)
             .with_context(|| format!("failed to write {}", paths.config.display()))?;
         println!("created {}", paths.config.display());
     }

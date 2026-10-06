@@ -197,7 +197,7 @@ pub fn parse_layouts(input: &str) -> Result<Vec<Layout>> {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]
-enum Val {
+pub(crate) enum Val {
     Str(String),
     Num(f64),
 }
@@ -213,11 +213,11 @@ enum Tok {
 }
 
 #[derive(Debug)]
-struct Node {
-    name: String,
-    args: Vec<Val>,
-    props: Vec<(String, Val)>,
-    children: Vec<Node>,
+pub(crate) struct Node {
+    pub(crate) name: String,
+    pub(crate) args: Vec<Val>,
+    pub(crate) props: Vec<(String, Val)>,
+    pub(crate) children: Vec<Node>,
 }
 
 fn interpret_layout(node: Node) -> Result<Layout> {
@@ -460,7 +460,7 @@ fn kdl_lex(input: &str) -> Result<Vec<Tok>> {
 
 // -- parser -- //
 
-fn kdl_nodes(input: &str) -> Result<Vec<Node>> {
+pub(crate) fn kdl_nodes(input: &str) -> Result<Vec<Node>> {
     let tokens = kdl_lex(input)?;
     Parser { tokens, pos: 0 }.nodes()
 }
@@ -504,8 +504,10 @@ impl Parser {
                     }
                 }
                 Some(Tok::Ident(k)) => {
-                    // `ident =` starts a property; a plain `ident` ends this
-                    // (possibly childless) node and the sibling begins.
+                    // `ident =` starts a property; bare `true`/`false` are KDL
+                    // booleans and act as arguments; any other plain `ident`
+                    // ends this (possibly childless) node and the sibling
+                    // begins.
                     if matches!(self.tokens.get(self.pos + 1), Some(Tok::Eq)) {
                         let k = k.clone();
                         self.pos += 2;
@@ -520,6 +522,9 @@ impl Parser {
                         };
                         self.pos += 1;
                         props.push((k, v));
+                    } else if matches!(k.as_str(), "true" | "false") {
+                        args.push(Val::Str(k.to_owned()));
+                        self.pos += 1;
                     } else {
                         return Ok(Node {
                             name,

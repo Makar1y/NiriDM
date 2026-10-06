@@ -79,21 +79,27 @@ impl PopupProvider for LogPopup {
     }
 }
 
-/// Runs an external command (today: a hand-written helper; Milestone 3 ships
-/// `ndm popup` behind the same interface).
+/// Runs an external command (the `ndm popup` helper).
 ///
 /// The command receives the situation as environment variables
 /// (`NDM_CONNECTED`, `NDM_NEW`, `NDM_LAYOUTS` — space separated) and is
 /// expected to print the chosen action on stdout. A non-zero exit, a missing
-/// binary, or empty stdout all mean "no choice made".
+/// binary, empty stdout, or a blown deadline all mean "no choice made".
 #[derive(Debug, Clone)]
 pub struct CommandPopup {
     pub cmd: PathBuf,
+    /// Extra arguments for the command (e.g. the `popup` subcommand when the
+    /// command is `ndm` itself).
+    pub args: Vec<String>,
+    /// Safety net: the child is killed after this long, even if it enforces
+    /// its own (shorter) popup timeout internally.
+    pub timeout: std::time::Duration,
 }
 
 impl PopupProvider for CommandPopup {
     fn show(&self, ctx: &PopupContext) -> Result<Option<String>> {
-        let out = Command::new(&self.cmd)
+        let mut child = Command::new(&self.cmd)
+            .args(&self.args)
             .env(
                 "NDM_CONNECTED",
                 join(
@@ -105,17 +111,35 @@ impl PopupProvider for CommandPopup {
             )
             .env("NDM_NEW", join(&ctx.new))
             .env("NDM_LAYOUTS", join(&ctx.layouts))
-            .output()
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
             .map_err(|e| NdError::SpawnFailed("popup command", e))?;
 
-        if !out.status.success() {
+        let Some(status) = crate::launcher::wait_or_kill(&mut child, self.timeout)? else {
+            tracing::warn!("popup command timed out after {:?}", self.timeout);
+            return Ok(None);
+        };
+
+        let mut out = String::new();
+        if let Some(mut stdout) = child.stdout.take() {
+            use std::io::Read;
+            let _ = stdout.read_to_string(&mut out);
+        }
+        let mut err = String::new();
+        if let Some(mut stderr) = child.stderr.take() {
+            use std::io::Read;
+            let _ = stderr.read_to_string(&mut err);
+        }
+        if !status.success() {
             tracing::warn!(
-                "popup command failed (status {})",
-                out.status.code().unwrap_or(-1)
+                "popup command failed (status {}): {}",
+                status.code().unwrap_or(-1),
+                err.trim()
             );
             return Ok(None);
         }
-        let text = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+        let text = out.trim().to_owned();
         Ok((!text.is_empty()).then_some(text))
     }
 }
