@@ -9,7 +9,7 @@ use ndm_core::action::Action;
 use ndm_core::config::Prefs;
 use ndm_core::launcher::{self, Menu};
 use ndm_core::layout::capture_layout;
-use ndm_core::paths::{write_if_changed, NiriDMPaths};
+use ndm_core::paths::NiriDMPaths;
 use ndm_core::popup::PopupContext;
 use ndm_core::Niri;
 
@@ -86,14 +86,15 @@ fn save_layouts(path: &PathBuf, layouts: &[ndm_core::layout::Layout]) -> Result<
 }
 
 /// Write `monitors.kdl` for `layout`, skipping the write when it would be a
-/// no-op (niri reloads on every write). Returns whether it was written.
+/// no-op (niri reloads on every write) and confirming the reload afterwards.
+/// Returns whether it was written.
 fn write_monitors(
     paths: &NiriDMPaths,
     outputs: &[ndm_core::types::Output],
     layout: &ndm_core::layout::Layout,
 ) -> Result<bool> {
     let kdl = ndm_core::kdl::generate_monitors_kdl(outputs, layout);
-    Ok(write_if_changed(&paths.monitors, &kdl)?)
+    Ok(ndm_core::verify::write_verified(&paths.monitors, &kdl)?)
 }
 
 /// Feedback line for commands whose stdout is theirs to use.
@@ -110,6 +111,13 @@ fn report_applied(paths: &NiriDMPaths, layout: &ndm_core::layout::Layout, writte
 }
 
 fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("ndm=info")),
+        )
+        .with_writer(std::io::stderr)
+        .init();
     let cli = Cli::parse();
     let paths = paths(&cli)?;
     let niri = Niri::new();

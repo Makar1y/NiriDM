@@ -34,6 +34,11 @@ impl Niri {
         Self { niri_bin: bin }
     }
 
+    /// The `niri` binary this client invokes.
+    pub fn bin(&self) -> &std::path::Path {
+        &self.niri_bin
+    }
+
     /// Query the connected outputs.
     pub fn outputs(&self) -> Result<Vec<Output>> {
         let value = self.run_msg(&["--json", "outputs"])?;

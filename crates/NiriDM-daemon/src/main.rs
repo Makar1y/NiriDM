@@ -15,7 +15,7 @@ use ndm_core::config::Prefs;
 use ndm_core::hotplug::{fingerprint, Debounce};
 use ndm_core::kdl::{generate_monitors_kdl, parse_layouts};
 use ndm_core::layout::{find_matching, Layout};
-use ndm_core::paths::{write_if_changed, NiriDMPaths};
+use ndm_core::paths::NiriDMPaths;
 use ndm_core::popup::{CommandPopup, LogPopup, PopupContext, PopupProvider};
 use ndm_core::Niri;
 
@@ -163,7 +163,7 @@ fn step(
     match find_matching(&layouts, outputs) {
         Ok(layout) => {
             let kdl = generate_monitors_kdl(outputs, layout);
-            let written = write_if_changed(&paths.monitors, &kdl)?;
+            let written = ndm_core::verify::write_verified(&paths.monitors, &kdl)?;
             if written {
                 tracing::info!("applied layout `{}`", layout.name);
             }

@@ -172,6 +172,8 @@ dependencies = [
  "clap",
  "ndm-core",
  "serde_json",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

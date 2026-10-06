@@ -7,6 +7,7 @@
 pub mod action;
 pub mod config;
 mod error;
+pub mod events;
 pub mod hotplug;
 pub mod ipc;
 pub mod kdl;
@@ -15,6 +16,7 @@ pub mod layout;
 pub mod paths;
 pub mod popup;
 pub mod types;
+pub mod verify;
 
 pub use error::{NdError, Result};
 pub use ipc::Niri;
