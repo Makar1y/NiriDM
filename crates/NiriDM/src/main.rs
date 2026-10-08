@@ -52,6 +52,28 @@ enum Cmd {
         #[arg(long, value_name = "PATH")]
         wl_mirror: Option<PathBuf>,
     },
+    /// Assign a workspace to an output in the active layout (persistent, via
+    /// generated `workspace` blocks). A route means the workspace only ever
+    /// appears on that output — "use this display for this workspace only".
+    /// Without <output>, the route is removed.
+    Route {
+        /// Workspace name (or `*` to match the focused workspace).
+        #[arg(value_name = "WORKSPACE")]
+        workspace: String,
+        /// Output connector to pin it to.
+        #[arg(value_name = "OUTPUT")]
+        output: Option<String>,
+    },
+    /// Transiently move a workspace to an output with
+    /// `move-workspace-to-monitor` (no KDL is written).
+    Switch {
+        /// Workspace name.
+        #[arg(value_name = "WORKSPACE")]
+        workspace: String,
+        /// Output connector.
+        #[arg(value_name = "OUTPUT")]
+        output: String,
+    },
     /// List saved layouts.
     List,
     /// Write the default config files if missing.
@@ -254,8 +276,74 @@ fn main() -> Result<()> {
         } => {
             run_mirror(&paths, &niri, &src, dst.as_deref(), wl_mirror.as_deref())?;
         }
+        Cmd::Route { workspace, output } => {
+            run_route(&paths, &niri, &workspace, output.as_deref())?;
+        }
+        Cmd::Switch { workspace, output } => {
+            outputs_exist(&niri, &[output.as_str()])?;
+            niri.action(
+                "move-workspace-to-monitor",
+                &["--reference", &workspace, &output],
+            )?;
+            println!("{workspace} -> {output}");
+        }
     }
 
+    Ok(())
+}
+
+/// `ndm route <workspace> [output]`: edit the workspace routing of the active
+/// layout. Giving an output pins the workspace to it (persistently, in
+/// `monitors.kdl`); omitting it removes the pin.
+fn run_route(
+    paths: &NiriDMPaths,
+    niri: &Niri,
+    workspace: &str,
+    output: Option<&str>,
+) -> Result<()> {
+    let outputs = niri.outputs().context("querying niri outputs")?;
+    let mut layouts = load_layouts(&paths.layouts)?;
+
+    let active = ndm_core::layout::find_matching(&layouts, &outputs)
+        .map_err(|e| anyhow::anyhow!("{e}"))?
+        .name
+        .clone();
+    {
+        let Some(layout) = layouts.iter_mut().find(|l| l.name == active) else {
+            bail!("no matching layout");
+        };
+        layout.workspaces.retain(|(w, _)| w != workspace);
+        if let Some(output) = output {
+            if !outputs.iter().any(|o| o.name == output) {
+                bail!("output `{output}` is not connected");
+            }
+            layout
+                .workspaces
+                .push((workspace.to_owned(), output.to_owned()));
+        }
+    }
+    save_layouts(&paths.layouts, &layouts)?;
+
+    let active_layout = layouts
+        .iter()
+        .find(|l| l.name == active)
+        .expect("layout was just edited");
+    write_monitors(paths, &outputs, active_layout)?;
+    match output {
+        Some(output) => println!("{workspace} -> {output} (layout `{active}`)"),
+        None => println!("{workspace} no longer pinned (layout `{active}`)"),
+    }
+    remind_include(paths)?;
+    Ok(())
+}
+
+fn outputs_exist(niri: &Niri, names: &[&str]) -> Result<()> {
+    let outputs = niri.outputs().context("querying niri outputs")?;
+    for name in names {
+        if !outputs.iter().any(|o| o.name == *name) {
+            bail!("output `{name}` is not connected");
+        }
+    }
     Ok(())
 }
 

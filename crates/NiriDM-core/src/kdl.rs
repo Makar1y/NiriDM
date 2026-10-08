@@ -48,6 +48,12 @@ pub fn generate_monitors_kdl(connected: &[Output], layout: &Layout) -> String {
         }
     }
 
+    for (workspace, connector) in &layout.workspaces {
+        let _ = writeln!(out, "workspace {workspace:?} {{");
+        let _ = writeln!(out, "    output {connector:?}");
+        out.push_str("}\n");
+    }
+
     out
 }
 
@@ -659,5 +665,22 @@ layout "Docked" {
         assert!(kdl.contains("variable-refresh-rate"));
         // eDP-1 is Role::Off => rendered as `off`.
         assert!(kdl.contains("off"));
+    }
+
+    #[test]
+    fn generates_niri_workspace_blocks_for_routes() {
+        let connected = vec![Output {
+            name: "DP-1".into(),
+            ..Default::default()
+        }];
+        let layouts = parse_layouts(SAMPLE).unwrap();
+        let kdl = generate_monitors_kdl(&connected, &layouts[0]);
+
+        // routes live in layouts.kdl as `output="..."` props; in monitors.kdl
+        // they become niri's `workspace "name" { output "X" }` shape.
+        assert!(
+            kdl.contains("workspace \"Chat\" {\n    output \"DP-1\"\n}\n"),
+            "workspace block missing:\n{kdl}"
+        );
     }
 }
