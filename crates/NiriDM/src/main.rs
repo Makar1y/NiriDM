@@ -74,6 +74,24 @@ enum Cmd {
         #[arg(value_name = "OUTPUT")]
         output: String,
     },
+    /// Run the hotplug daemon (forwards to the sibling `ndm-daemon` binary).
+    Daemon {
+        /// Poll interval in milliseconds (default: `poll-interval-ms` in config.kdl).
+        #[arg(long, value_name = "MS")]
+        poll_ms: Option<u64>,
+        /// Settle window in milliseconds (default: `settle-ms`).
+        #[arg(long, value_name = "MS")]
+        settle_ms: Option<u64>,
+        /// Poll once, apply immediately, and exit.
+        #[arg(long)]
+        once: bool,
+        /// Never prompt; log an unmatched monitor set instead.
+        #[arg(long, conflicts_with = "popup_cmd")]
+        no_popup: bool,
+        /// Popup command other than the default `ndm popup`.
+        #[arg(long, value_name = "CMD", conflicts_with = "no_popup")]
+        popup_cmd: Option<PathBuf>,
+    },
     /// List saved layouts.
     List,
     /// Write the default config files if missing.
@@ -287,9 +305,60 @@ fn main() -> Result<()> {
             )?;
             println!("{workspace} -> {output}");
         }
+        Cmd::Daemon {
+            poll_ms,
+            settle_ms,
+            once,
+            no_popup,
+            popup_cmd,
+        } => {
+            run_daemon(poll_ms, settle_ms, once, no_popup, popup_cmd)?;
+        }
     }
 
     Ok(())
+}
+
+/// `ndm daemon`: exec the sibling `ndm-daemon` binary (installed next to
+/// `ndm`), forwarding the hotplug options so a service unit can talk to a
+/// single binary.
+fn run_daemon(
+    poll_ms: Option<u64>,
+    settle_ms: Option<u64>,
+    once: bool,
+    no_popup: bool,
+    popup_cmd: Option<PathBuf>,
+) -> Result<()> {
+    let bin = std::env::current_exe()
+        .context("finding the ndm binary")?
+        .with_file_name("ndm-daemon");
+    if !bin.is_file() {
+        bail!(
+            "{} not found next to this binary — install the `ndm-daemon` package",
+            bin.display()
+        );
+    }
+
+    let mut cmd = Command::new(&bin);
+    if let Some(v) = poll_ms {
+        cmd.args(["--poll-ms", &v.to_string()]);
+    }
+    if let Some(v) = settle_ms {
+        cmd.args(["--settle-ms", &v.to_string()]);
+    }
+    if once {
+        cmd.arg("--once");
+    }
+    if no_popup {
+        cmd.arg("--no-popup");
+    }
+    if let Some(v) = popup_cmd {
+        cmd.args(["--popup-cmd", &v.to_string_lossy()]);
+    }
+    let status = cmd
+        .status()
+        .with_context(|| format!("running {}", bin.display()))?;
+    std::process::exit(status.code().unwrap_or(1));
 }
 
 /// `ndm route <workspace> [output]`: edit the workspace routing of the active

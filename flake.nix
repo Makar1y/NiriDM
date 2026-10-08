@@ -6,8 +6,12 @@
   outputs = { self, nixpkgs }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" ];
-      forAllSystems = f:
-        nixpkgs.lib.genAttrs systems (system: f system);
+      forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f system);
+
+      # Build the package with the nixpkgs of a given system.
+      ndmPackage = system:
+        let pkgs = nixpkgs.legacyPackages.${system};
+        in import ./nix/package.nix { inherit pkgs; src = ./.; };
     in
     {
       # `nix develop`
@@ -24,6 +28,29 @@
           };
         });
 
-      # Packaging (rustPlatform.buildRustPackage) lands in Milestone 5.
+      # `nix build .`
+      packages = forAllSystems (system: {
+        default = ndmPackage system;
+      });
+
+      # `nix install .#nixosModules.niridm` → programs.NiriDM.*
+      nixosModules = {
+        niridm = { config, lib, pkgs, ... }:
+          import ./nix/modules/programs/niridm.nix {
+            inherit config lib pkgs;
+            ndmPackage = ndmPackage pkgs.system;
+          };
+        default = self.nixosModules.niridm;
+      };
+
+      # `nix install .#homeManagerModules.niridm` → programs.NiriDM.*
+      homeManagerModules = {
+        niridm = { config, lib, pkgs, ... }:
+          import ./nix/modules/programs/niridm-home-manager.nix {
+            inherit config lib pkgs;
+            ndmPackage = ndmPackage pkgs.system;
+          };
+        default = self.homeManagerModules.niridm;
+      };
     };
 }
