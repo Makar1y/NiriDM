@@ -1,0 +1,21 @@
+#!/bin/sh
+case "$*" in
+  "msg --json outputs") cat "${NDM_MOCK_STATE:?}" ;;
+  "msg --json windows")
+    if [ "${NDM_MOCK_WINDOWS:-none}" = "mirror" ]; then
+      printf '%s\n' '[{"id":42,"title":"wl-mirror \u2014 DP-1","app_id":"wl-mirror","pid":9999,"workspace_id":1,"is_focused":false}]'
+    else
+      printf '%s\n' '[]'
+    fi ;;
+  "msg --json event-stream")
+    printf '{"WorkspacesChanged":{"workspaces":[]}}\n'
+    printf '{"ConfigLoaded":{"failed":false}}\n'
+    case "${NDM_MOCK_RELOAD:-ok}" in
+      ok)   sleep 0.3; printf '{"ConfigLoaded":{"failed":false}}\n' ;;
+      fail) sleep 0.3; printf '{"ConfigLoaded":{"failed":true}}\n' ;;
+      none) : ;;
+    esac
+    sleep 3600 ;;
+  "msg action "*) echo "$*" >> "${NDM_MOCK_ACTION_LOG:-/dev/null}"; printf '{"Ok":null}\n' ;;
+  *) printf '{"Ok":null}\n' ;;
+esac

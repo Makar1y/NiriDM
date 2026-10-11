@@ -1,0 +1,5 @@
+#!/bin/sh
+# Never answers on its own: used to verify the popup deadline kills it.
+echo "args: $*; prompt: $(cat)" >> "${NDM_FIXTURE_LOG:-/dev/null}"
+sleep 60
+echo "Extend right"

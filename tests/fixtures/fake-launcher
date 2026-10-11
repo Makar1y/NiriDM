@@ -1,0 +1,9 @@
+#!/bin/sh
+# Fake interactive launcher: logs what it was given, answers "Extend right".
+{
+  echo "--- $(date +%T)"
+  echo "args: $*"
+  echo "env connected=[$NDM_CONNECTED] new=[$NDM_NEW] layouts=[$NDM_LAYOUTS]"
+  echo "prompt: $(cat)"
+} >> "${NDM_FIXTURE_LOG:-/dev/null}"
+echo "Extend right"

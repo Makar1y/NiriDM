@@ -8,6 +8,16 @@ All state lives in `~/.config/NiriDM/` (KDL). Commands talk to niri over its
 IPC (`niri msg` / `niri msg --json`) and apply configuration by writing an
 `include`d `monitors.kdl`, which niri (≥ 26.04) live-reloads.
 
+> **Early development (v0.1.0).** The CLI and on-disk format may still change.
+
+## Requirements
+
+- Linux with a [niri](https://github.com/YaLTeR/niri) session **≥ 26.04**
+  (`include optional=true` and live reload of included files).
+- `niri msg` available on `PATH` (ships with niri).
+- Optional: an interactive launcher for the popup (see
+  [Configuration](#configuration)) and `wl-mirror` for `ndm mirror`.
+
 ## Status
 
 Implemented:
@@ -35,7 +45,7 @@ Implemented:
 
 ```nix
 # flake.nix inputs
-inputs.niridm.url = "github:m1y/NDM";  # or your fork/path
+inputs.niridm.url = "github:Makar1y/NiriDM";
 
 # NixOS configuration.nix
 {
@@ -137,16 +147,16 @@ nix develop
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+tests/run.sh        # build + all end-to-end smoke tests
 ```
 
-Tests never touch a real niri: the IPC layer is shell-based, and the mock at
-`/tmp/opencode/ndm-fixture/mock-niri` (plus `fake-wlmirror`) drives the
-end-to-end smokes (`/tmp/opencode/m{3,4,4b,4c}-smoke.sh`). Relevant env vars:
+Tests never touch a real niri. `tests/fixtures/mock-niri` is a fake `niri` CLI
+(it answers `msg --json outputs|windows` and the `event-stream`),
+`fake-wlmirror` stands in for wl-mirror, and `tests/smoke/*.sh` drive the real
+`ndm` / `ndm-daemon` binaries against them. Relevant env vars:
 `NiriDM_NIRI_BIN`, `NiriDM_CONFIG_DIR`, `NDM_MOCK_RELOAD`, `NDM_MOCK_WINDOWS`,
 `NDM_MOCK_ACTION_LOG`.
 
-See `PLAN.md` for the milestone-by-milestone design history.
-
 ## License
 
-See repository metadata.
+GPL-3.0-or-later — see [LICENSE](LICENSE).
