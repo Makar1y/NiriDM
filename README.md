@@ -45,6 +45,8 @@ inputs.niridm.url = "github:m1y/NDM";  # or your fork/path
     autoHotplug = true;          # systemd user units NiriDM-init + NiriDM-daemon
     pollInterval = 1000;         # ms
     popupProvider = [ "fuzzel" ];  # applied once on first bootstrap
+    mirror.enable = true;        # install wl-mirror for `ndm mirror` (default)
+    # mirror.package = pkgs.wl-mirror;  # override the mirror tool
   };
 }
 
@@ -120,8 +122,10 @@ rejected by niri is rolled back to the previous content.
   usable as a normal output; use `ndm switch`/`ndm route` to decide which
   workspaces appear where.
 - **Mirror** requires `wl-mirror` on `PATH` (or set `mirror-tool` /
-  `--wl-mirror`). NDM steers the `wl-mirror` window by PID (fallback:
-  app-id/title match), so it survives races with niri's focus.
+  `--wl-mirror`). The NixOS and home-manager modules install `pkgs.wl-mirror`
+  by default (`programs.NiriDM.mirror.enable`). NDM steers the `wl-mirror`
+  window by PID (fallback: app-id/title match), so it survives races with
+  niri's focus.
 - **Popup providers** are probed in order; the first executable found is used.
 - **IPC stability** — niri's JSON event stream has been stable since 24.11;
   unknown event variants are ignored for forward compatibility.

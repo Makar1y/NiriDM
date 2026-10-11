@@ -52,10 +52,25 @@ in
         file does not exist yet; afterwards it is user-owned.
       '';
     };
+
+    mirror = {
+      enable = mkEnableOption "installing wl-mirror for `ndm mirror`" // {
+        default = true;
+      };
+      package = mkOption {
+        type = package;
+        default = pkgs.wl-mirror;
+        description = ''
+          Mirror tool installed on `PATH` and used by `ndm mirror` unless
+          `mirror-tool` is set in `~/.config/NiriDM/config.kdl`.
+        '';
+      };
+    };
   };
 
   config = mkIf cfg.enable {
-    home.packages = [ cfg.package ];
+    home.packages = [ cfg.package ]
+      ++ lib.optional cfg.mirror.enable cfg.mirror.package;
 
     systemd.user.services.NiriDM-daemon = mkIf cfg.autoHotplug {
       Unit = {
