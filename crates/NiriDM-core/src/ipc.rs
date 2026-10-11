@@ -40,9 +40,12 @@ impl Niri {
     }
 
     /// Query the connected outputs.
+    ///
+    /// niri 26.04 returns a JSON object keyed by connector name
+    /// (`{"eDP-1": {...}}`); older releases returned an array. Accept both.
     pub fn outputs(&self) -> Result<Vec<Output>> {
         let value = self.run_msg(&["--json", "outputs"])?;
-        serde_json::from_value(value).map_err(|e| NdError::Json("niri msg --json outputs", e))
+        parse_outputs(value)
     }
 
     /// Run a niri action. `name` is the action, `args` are the `--key value`
@@ -96,6 +99,29 @@ impl Niri {
     }
 }
 
+/// Decode the content of `niri msg --json outputs`, accepting either the
+/// keyed object niri 26.04 emits or the array older releases emitted.
+fn parse_outputs(value: serde_json::Value) -> Result<Vec<Output>> {
+    let err = |e| NdError::Json("niri msg --json outputs", e);
+    match value {
+        serde_json::Value::Array(_) => serde_json::from_value(value).map_err(err),
+        serde_json::Value::Object(map) => map
+            .into_iter()
+            .map(|(name, v)| {
+                let mut output: Output = serde_json::from_value(v).map_err(err)?;
+                if output.name.is_empty() {
+                    output.name = name;
+                }
+                Ok(output)
+            })
+            .collect(),
+        other => Err(NdError::Json(
+            "niri msg --json outputs",
+            serde::de::Error::custom(format!("expected an object or array, got {other}")),
+        )),
+    }
+}
+
 /// `niri msg --json` on a real socket returns `{"Ok": <content>}`; when the
 /// socket is missing or niri is not running it may print a plain error line or
 /// `{"Err": ...}`. Tolerate all three: unwrap Ok/Err, and pass anything else
@@ -140,5 +166,30 @@ mod tests {
     fn passes_through_bare_object() {
         let v = json!({ "name": "eDP-1" });
         assert_eq!(unwrap_reply(v.clone()).unwrap(), v);
+    }
+
+    #[test]
+    fn parses_keyed_output_map() {
+        let v = json!({
+            "DP-1": { "name": "DP-1", "serial": "S1", "current_mode": 0,
+                      "modes": [{ "width": 1920, "height": 1080, "refresh_rate": 60000 }] },
+            "eDP-1": { "name": "eDP-1", "serial": null, "current_mode": null }
+        });
+        let outputs = parse_outputs(v).unwrap();
+        assert_eq!(outputs.len(), 2);
+        // serde_json's object map is key-ordered, so DP-1 comes first.
+        assert_eq!(outputs[0].name, "DP-1");
+        assert!(outputs[0].is_on());
+        assert_eq!(outputs[1].serial, "");
+        assert!(!outputs[1].is_on());
+    }
+
+    #[test]
+    fn parses_legacy_output_array_and_fills_name_from_key() {
+        let v = json!([
+            { "serial": "S1" }
+        ]);
+        let outputs = parse_outputs(v).unwrap();
+        assert_eq!(outputs.len(), 1);
     }
 }

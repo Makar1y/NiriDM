@@ -9,6 +9,14 @@ use std::fmt;
 
 use serde::Deserialize;
 
+/// Deserialise a string, mapping JSON `null` to the empty string.
+fn de_null_to_default<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// A single connector currently known to niri.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default)]
@@ -17,6 +25,8 @@ pub struct Output {
     pub name: String,
     pub make: Option<String>,
     pub model: Option<String>,
+    /// Serial number; niri sends `null` for outputs without one.
+    #[serde(default, deserialize_with = "de_null_to_default")]
     pub serial: String,
     /// Physical size in millimetres (two element tuple: width, height).
     pub physical_size: (u32, u32),
@@ -69,7 +79,9 @@ impl Output {
 pub struct Mode {
     pub width: u32,
     pub height: u32,
-    /// Refresh rate in mHz (e.g. 143_912 for 143.912 Hz).
+    /// Refresh rate in mHz (e.g. 143_912 for 143.912 Hz). niri calls this
+    /// field `refresh_rate`; older snapshots used `refresh_rate_mhz`.
+    #[serde(alias = "refresh_rate")]
     pub refresh_rate_mhz: u32,
 }
 
@@ -181,15 +193,19 @@ impl<'de> Deserialize<'de> for Transform {
             }
 
             fn visit_str<E: Error>(self, v: &str) -> std::result::Result<Transform, E> {
-                match v {
+                // niri serialises these as smithay `Transform` debug names
+                // ("Normal", "Flipped90", ...), but config-style lowercase
+                // forms ("flipped-90") also occur. Normalise both.
+                let norm = v.to_ascii_lowercase().replace(['-', '_'], "");
+                match norm.as_str() {
                     "normal" => Ok(Transform::Normal),
                     "90" => Ok(Transform::Deg90),
                     "180" => Ok(Transform::Deg180),
                     "270" => Ok(Transform::Deg270),
                     "flipped" => Ok(Transform::Flipped),
-                    "flipped-90" => Ok(Transform::Flipped90),
-                    "flipped-180" => Ok(Transform::Flipped180),
-                    "flipped-270" => Ok(Transform::Flipped270),
+                    "flipped90" => Ok(Transform::Flipped90),
+                    "flipped180" => Ok(Transform::Flipped180),
+                    "flipped270" => Ok(Transform::Flipped270),
                     _ => Err(E::custom(format!("unknown transform value {v:?}"))),
                 }
             }
@@ -233,6 +249,29 @@ mod tests {
         assert!(!o.vrr_enabled);
         assert!(o.is_on());
         assert_eq!(o.current_mode().unwrap().to_string(), "1920x1080@143.912");
+    }
+
+    #[test]
+    fn output_parses_real_niri_shape() {
+        // Shape captured from niri 26.04: `refresh_rate` (not _mhz), null
+        // serial, smithay-style capitalised transform.
+        let o: Output = serde_json::from_value(json!({
+            "name": "eDP-1",
+            "make": "BOE",
+            "model": "0x0B76",
+            "serial": null,
+            "physical_size": [340, 220],
+            "modes": [{ "width": 1920, "height": 1200, "refresh_rate": 60002, "is_preferred": true }],
+            "current_mode": 0,
+            "is_custom_mode": false,
+            "vrr_supported": true,
+            "vrr_enabled": false,
+            "logical": { "x": 0, "y": 0, "width": 1920, "height": 1200, "scale": 1.0, "transform": "Normal" }
+        }))
+        .unwrap();
+        assert_eq!(o.serial, "");
+        assert_eq!(o.current_mode().unwrap().to_string(), "1920x1200@60.002");
+        assert_eq!(o.logical.unwrap().transform, Transform::Normal);
     }
 
     #[test]
