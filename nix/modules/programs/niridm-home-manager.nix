@@ -89,8 +89,11 @@ in
       default = [ ];
       description = ''
         Launchers, most preferred first, used when a new monitor needs a
-        decision. Applied to `~/.config/NiriDM/config.kdl` only when that
-        file does not exist yet; afterwards it is user-owned.
+        decision. They are the fallback for the settings popup: with
+        `popup-ui "tui"` (the default) a terminal hosts `ndm tui` first, and
+        the launcher chain is only tried when no configured terminal is found.
+        Applied to `~/.config/NiriDM/config.kdl` only when that file does not
+        exist yet; afterwards it is user-owned.
       '';
     };
 

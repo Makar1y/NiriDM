@@ -136,6 +136,27 @@ fn is_executable(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// The arguments that run `program` inside the terminal `launcher_name`.
+///
+/// Terminals disagree on how to pass a command: `foot`/`kitty` take it
+/// directly, `wezterm`/`gnome-terminal` want a `--` separator, and most
+/// others (`alacritty`, `xterm`, `ghostty`, ...) use `-e`.
+pub fn terminal_args(
+    launcher_name: &str,
+    program: &[std::ffi::OsString],
+) -> Vec<std::ffi::OsString> {
+    use std::ffi::OsString as O;
+    let base = binary_name(Path::new(launcher_name));
+    let mut args: Vec<O> = match base.as_str() {
+        "foot" | "kitty" => Vec::new(),
+        "wezterm" => vec![O::from("start"), O::from("--")],
+        "gnome-terminal" => vec![O::from("--")],
+        _ => vec![O::from("-e")],
+    };
+    args.extend_from_slice(program);
+    args
+}
+
 /// Show `menu` through `bin`, giving up after `timeout`.
 ///
 /// Returns the picked item, or `Ok(None)` when the user dismissed the popup,
@@ -391,5 +412,31 @@ mod tests {
             .args(&menu)
             .iter()
             .any(|a| a.to_str() == Some("--print-column=1")));
+    }
+
+    #[test]
+    fn terminal_arguments_per_family() {
+        use std::ffi::OsString as O;
+        let program = vec![O::from("ndm"), O::from("tui")];
+        let f = |name: &str| terminal_args(name, &program);
+        assert_eq!(f("foot"), program);
+        assert_eq!(f("kitty"), program);
+        assert_eq!(
+            f("wezterm"),
+            vec![
+                O::from("start"),
+                O::from("--"),
+                O::from("ndm"),
+                O::from("tui")
+            ]
+        );
+        assert_eq!(
+            f("alacritty"),
+            vec![O::from("-e"), O::from("ndm"), O::from("tui")]
+        );
+        assert_eq!(
+            f("/usr/bin/xterm"),
+            vec![O::from("-e"), O::from("ndm"), O::from("tui")]
+        );
     }
 }

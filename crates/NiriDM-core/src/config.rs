@@ -4,6 +4,8 @@
 //! config {
 //!     popup-providers "fuzzel" "wofi" "bemenu" "yad" "zenity" "dmenu"
 //!     popup-timeout 20
+//!     popup-ui "tui"
+//!     popup-terminals "alacritty" "foot" "kitty" "wezterm" "ghostty" "xterm"
 //!     remember-new-monitors true
 //!     poll-interval-ms 1000
 //!     settle-ms 750
@@ -20,6 +22,15 @@ use std::time::Duration;
 use crate::error::{NdError, Result};
 use crate::kdl::{kdl_nodes, Val};
 
+/// How the popup asks the user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PopupUi {
+    /// Full-screen per-monitor settings ("`ndm tui`") in a terminal.
+    Tui,
+    /// Single-answer launcher menu (`fuzzel`, `wofi`, `zenity`, ...).
+    Menu,
+}
+
 /// Preferences read from `config.kdl`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Prefs {
@@ -27,6 +38,10 @@ pub struct Prefs {
     pub popup_providers: Vec<String>,
     /// How long the popup waits for an answer before giving up.
     pub popup_timeout: Duration,
+    /// Whether the popup is the TUI settings screen or a launcher menu.
+    pub popup_ui: PopupUi,
+    /// Terminals tried (in order) to host the TUI popup.
+    pub popup_terminals: Vec<String>,
     /// Automatically save the arrangement chosen in the popup as a layout,
     /// so the next time this monitor set appears no popup is needed.
     pub remember_new_monitors: bool,
@@ -46,6 +61,11 @@ impl Default for Prefs {
                 .map(|s| (*s).to_owned())
                 .collect(),
             popup_timeout: Duration::from_secs(20),
+            popup_ui: PopupUi::Tui,
+            popup_terminals: ["alacritty", "foot", "kitty", "wezterm", "ghostty", "xterm"]
+                .iter()
+                .map(|s| (*s).to_owned())
+                .collect(),
             remember_new_monitors: true,
             poll_interval_ms: 1000,
             settle_ms: 750,
@@ -120,6 +140,27 @@ impl Prefs {
                             ))
                         }
                     },
+                    "popup-ui" => match child.args.as_slice() {
+                        [Val::Str(s)] if s.eq_ignore_ascii_case("tui") => {
+                            prefs.popup_ui = PopupUi::Tui
+                        }
+                        [Val::Str(s)] if s.eq_ignore_ascii_case("menu") => {
+                            prefs.popup_ui = PopupUi::Menu
+                        }
+                        _ => return Err(NdError::Other("`popup-ui` needs `tui` or `menu`".into())),
+                    },
+                    "popup-terminals" => {
+                        prefs.popup_terminals = child
+                            .args
+                            .iter()
+                            .map(|v| string_arg("popup-terminals", v))
+                            .collect::<Result<Vec<_>>>()?;
+                        if prefs.popup_terminals.is_empty() {
+                            return Err(NdError::Other(
+                                "`popup-terminals` needs at least one name".into(),
+                            ));
+                        }
+                    }
                     "poll-interval-ms" => {
                         prefs.poll_interval_ms = millis_arg(child, "poll-interval-ms")?
                     }
@@ -168,6 +209,8 @@ mod tests {
         assert_eq!(p, Prefs::default());
         assert_eq!(p.popup_providers[0], "fuzzel");
         assert_eq!(p.popup_timeout, Duration::from_secs(20));
+        assert_eq!(p.popup_ui, PopupUi::Tui);
+        assert_eq!(p.popup_terminals[0], "alacritty");
         assert!(p.remember_new_monitors);
         assert_eq!(p.poll_interval_ms, 1000);
         assert_eq!(p.settle_ms, 750);
@@ -180,6 +223,8 @@ mod tests {
             config {
                 popup-providers "wofi" "fuzzel"
                 popup-timeout 5
+                popup-ui "menu"
+                popup-terminals "foot" "kitty"
                 remember-new-monitors false
                 poll-interval-ms 250
                 settle-ms 100
@@ -193,6 +238,11 @@ mod tests {
             vec!["wofi".to_owned(), "fuzzel".to_owned()]
         );
         assert_eq!(p.popup_timeout, Duration::from_secs(5));
+        assert_eq!(p.popup_ui, PopupUi::Menu);
+        assert_eq!(
+            p.popup_terminals,
+            vec!["foot".to_owned(), "kitty".to_owned()]
+        );
         assert!(!p.remember_new_monitors);
         assert_eq!(p.poll_interval_ms, 250);
         assert_eq!(p.settle_ms, 100);
@@ -218,6 +268,8 @@ mod tests {
         assert!(Prefs::parse(r#"config { popup-timeout "soon" }"#).is_err());
         assert!(Prefs::parse(r#"config { remember-new-monitors maybe }"#).is_err());
         assert!(Prefs::parse(r#"config { popup-providers }"#).is_err());
+        assert!(Prefs::parse(r#"config { popup-ui "web" }"#).is_err());
+        assert!(Prefs::parse(r#"config { popup-terminals }"#).is_err());
     }
 
     #[test]

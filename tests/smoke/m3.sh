@@ -26,8 +26,9 @@ echo "== init =="
 echo "--- config.kdl created:"
 cat "$CFG/config.kdl"
 
-# Point the provider chain at the fake launcher.
+# Point the provider chain at the fake launcher and pin the menu popup.
 sed -i "s|^    popup-providers .*|    popup-providers \"$F/fake-launcher\"|" "$CFG/config.kdl"
+sed -i "s|^    popup-ui .*|    popup-ui \"menu\"|" "$CFG/config.kdl"
 grep popup-providers "$CFG/config.kdl"
 echo "--- prefs parse check (via popup help errors-free load):"
 "$NDM" list
@@ -85,6 +86,18 @@ echo "stdout=[$out] elapsed=$((end-start))s"
 cat "$H/popup-stderr.txt"
 test -z "$out" && test $((end-start)) -lt 10 && echo "OK: timed out fast with empty stdout"
 pgrep -f hang-launcher >/dev/null && { echo "FAIL: launcher still alive"; exit 1; } || echo "OK: hung launcher killed"
+
+echo
+echo "== TUI popup falls back to the menu when no terminal is found =="
+sed -i 's|hang-launcher"|fake-launcher"|' "$CFG/config.kdl"
+sed -i 's|^    popup-ui "menu"|    popup-ui "tui"|' "$CFG/config.kdl"
+sed -i 's|^    popup-terminals .*|    popup-terminals "definitely-not-a-real-terminal"|' "$CFG/config.kdl"
+rm -f "$L"
+out=$(NDM_MOCK_STATE=$F/state-b.json "$NDM" popup DP-9 2>"$H/popup-stderr.txt")
+echo "stderr:"
+cat "$H/popup-stderr.txt"
+echo "stdout=[$out]"
+test "$out" = "Extend right" && echo "OK: fell back to the launcher menu"
 
 echo
 echo "ALL SMOKE CHECKS PASSED"

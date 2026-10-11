@@ -16,8 +16,10 @@ short version, see the [Quick start](../README.md#quick-start).
 
 Optional, for specific features:
 
-- an interactive launcher for the hotplug popup — `fuzzel`, `wofi`, `bemenu`,
-  `yad`, `zenity`, or `dmenu`; and
+- a terminal to host the settings popup — `alacritty`, `foot`, `kitty`,
+  `wezterm`, `ghostty`, or `xterm` (one is enough; any terminal works via
+  `popup-terminals`); otherwise a launcher is used as a fallback:
+  `fuzzel`, `wofi`, `bemenu`, `yad`, `zenity`, or `dmenu`; and
 - `wl-mirror` for `ndm mirror`.
 
 ## Option A — NixOS (flake module)
@@ -173,9 +175,10 @@ systemctl --user status NiriDM-daemon
 journalctl --user -u NiriDM-daemon -f
 ```
 
-Plug in a monitor; if no saved layout matches, the popup should appear (with a
-launcher installed), or the daemon logs what it would do when started with
-`--no-popup`.
+Plug in a monitor; if no saved layout matches, a settings screen should open in
+a terminal (with `popup-ui "tui"`, the default). If no supported terminal is
+installed it falls back to a launcher menu, or the daemon logs what it would do
+when started with `--no-popup`.
 
 ## Update and uninstall
 
@@ -216,6 +219,8 @@ from the daemon's user service).
 
 ### The popup never appears
 
-- Install one of the supported launchers, or set `popup-providers` /
-  `programs.NiriDM.popupProvider`.
-- Providers are probed in order; the first executable found wins.
+- With `popup-ui "tui"`, install a terminal listed in `popup-terminals` (default:
+  `alacritty`, `foot`, `kitty`, `wezterm`, `ghostty`, `xterm`).
+- With `popup-ui "menu"`, install one of the supported launchers, or set
+  `popup-providers` / `programs.NiriDM.popupProvider`.
+- Providers/terminals are probed in order; the first executable found wins.

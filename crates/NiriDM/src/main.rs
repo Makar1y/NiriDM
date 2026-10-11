@@ -1,8 +1,11 @@
 //! `ndm` — NiriDM command line interface.
 
+mod tui;
+
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
@@ -12,6 +15,7 @@ use ndm_core::launcher::{self, Menu};
 use ndm_core::layout::capture_layout;
 use ndm_core::paths::NiriDMPaths;
 use ndm_core::popup::PopupContext;
+use ndm_core::screen::{Arrangement, Screen};
 use ndm_core::Niri;
 
 #[derive(Parser)]
@@ -104,6 +108,20 @@ enum Cmd {
         #[arg(long, value_name = "NAME_OR_PATH")]
         provider: Option<String>,
         /// Popup timeout in seconds (overrides `config.kdl`).
+        #[arg(long)]
+        timeout: Option<u64>,
+    },
+    /// Interactive per-monitor settings (the TUI popup). `ndm popup` runs this
+    /// in a terminal; you can also run it by hand.
+    Tui {
+        /// Output to configure (default: `$NDM_NEW` when run by the popup).
+        #[arg(long, value_name = "OUTPUT")]
+        new: Option<String>,
+        /// Write the chosen action to this file (the popup reads it); when
+        /// omitted the action is printed on stdout instead.
+        #[arg(long, value_name = "PATH")]
+        report: Option<PathBuf>,
+        /// Dismiss if unanswered after this many seconds.
         #[arg(long)]
         timeout: Option<u64>,
     },
@@ -286,6 +304,13 @@ fn main() -> Result<()> {
             timeout,
         } => {
             run_popup(&paths, &niri, connector, provider, timeout)?;
+        }
+        Cmd::Tui {
+            new,
+            report,
+            timeout,
+        } => {
+            run_tui(&paths, &niri, new, report, timeout)?;
         }
         Cmd::Mirror {
             src,
@@ -565,6 +590,19 @@ fn run_popup(
         bail!("output `{target}` is not connected");
     }
 
+    // TUI popup: host `ndm tui` in a terminal instead of the launcher menu.
+    if prefs.popup_ui == ndm_core::config::PopupUi::Tui {
+        if let Some(term) =
+            launcher::detect(&prefs.popup_terminals, std::env::var_os("PATH").as_deref())
+        {
+            return run_tui_popup(paths, &target, &prefs, &term);
+        }
+        eprintln!(
+            "no terminal found for the TUI popup (tried: {}); using a launcher menu",
+            prefs.popup_terminals.join(", ")
+        );
+    }
+
     let layouts = load_layouts(&paths.layouts)?;
     let ctx = PopupContext {
         connected: outputs,
@@ -629,6 +667,166 @@ fn run_popup(
     Ok(())
 }
 
+/// `ndm tui`: edit the settings for one monitor in a full-screen TUI, then
+/// apply (and optionally save) the result. When `--report` is given the chosen
+/// action lands in that file so the daemon popup can read it; otherwise it is
+/// printed, so the command is usable by hand.
+fn run_tui(
+    paths: &NiriDMPaths,
+    niri: &Niri,
+    new: Option<String>,
+    report: Option<PathBuf>,
+    timeout: Option<u64>,
+) -> Result<()> {
+    let prefs = Prefs::load(&paths.config)?;
+    let outputs = niri.outputs().context("querying niri outputs")?;
+
+    let target = match new {
+        Some(c) => c,
+        None => {
+            let from_env = std::env::var("NDM_NEW").unwrap_or_default();
+            let first = from_env.split_whitespace().next();
+            match first {
+                Some(c) => c.to_owned(),
+                None => bail!("usage: ndm tui --new <output>  (the popup passes $NDM_NEW)"),
+            }
+        }
+    };
+    if !outputs.iter().any(|o| o.name == target) {
+        bail!("output `{target}` is not connected");
+    }
+
+    let mut screen = Screen::new(outputs.clone(), &target)?;
+    let ctx = PopupContext {
+        connected: outputs,
+        new: vec![target.clone()],
+        layouts: Vec::new(),
+    };
+    let describe = format!("NiriDM · {}", ctx.describe(&target));
+
+    let deadline = timeout.map(|s| Instant::now() + Duration::from_secs(s));
+    let outcome = tui::run(&mut screen, &describe, deadline)?;
+
+    match outcome {
+        tui::Outcome::Cancel => {
+            if let Some(path) = &report {
+                let _ = std::fs::remove_file(path);
+            }
+            eprintln!("popup dismissed");
+            Ok(())
+        }
+        tui::Outcome::Apply { save } => {
+            let layout = screen.to_layout()?;
+            let do_save = save || prefs.remember_new_monitors;
+            if do_save {
+                let mut layouts = load_layouts(&paths.layouts)?;
+                layouts.retain(|l| l.name != layout.name);
+                layouts.push(layout.clone());
+                save_layouts(&paths.layouts, &layouts)?;
+                eprintln!("saved layout `{}`", layout.name);
+            }
+
+            let written = write_monitors(paths, &screen.outputs, &layout)?;
+            eprintln!(
+                "{}",
+                if written {
+                    format!("applied `{}`", layout.name)
+                } else {
+                    format!("layout `{}` already applied", layout.name)
+                }
+            );
+            remind_include(paths)?;
+
+            if screen.arrangement == Arrangement::Mirror {
+                if let Some(src) = screen.mirror_from.clone() {
+                    start_mirror(&src, &screen.target)?;
+                }
+            }
+
+            if let Some(path) = &report {
+                std::fs::write(path, screen.report())?;
+            } else {
+                println!("{}", screen.report());
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Launch `ndm mirror <src> <dst>` detached, so the mirror keeps running after
+/// the TUI (and its terminal) are gone.
+fn start_mirror(src: &str, dst: &str) -> Result<()> {
+    #[cfg(unix)]
+    use std::os::unix::process::CommandExt;
+
+    let exe = std::env::current_exe().context("finding the ndm binary")?;
+    let mut cmd = Command::new(&exe);
+    cmd.args(["mirror", src, dst])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // Detach into a session of its own so closing this terminal cannot SIGHUP
+    // the wire and stop the mirror (std's `CommandExt::setsid` is still
+    // unstable, so call the syscall directly).
+    #[cfg(unix)]
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    cmd.spawn()
+        .with_context(|| format!("starting {} mirror", exe.display()))?;
+    Ok(())
+}
+
+/// Run `ndm tui` for `target` inside the first available terminal, waiting up
+/// to the popup timeout and reporting the chosen action on stdout.
+fn run_tui_popup(paths: &NiriDMPaths, target: &str, prefs: &Prefs, term: &PathBuf) -> Result<()> {
+    let exe = std::env::current_exe().context("finding the ndm binary")?;
+    let report = paths
+        .dir
+        .join(format!(".popup-{}.report", std::process::id()));
+
+    let program: Vec<OsString> = vec![
+        exe.clone().into_os_string(),
+        "tui".into(),
+        "--new".into(),
+        OsString::from(target),
+        "--report".into(),
+        report.clone().into_os_string(),
+        "--timeout".into(),
+        OsString::from(prefs.popup_timeout.as_secs().to_string()),
+    ];
+    let args = launcher::terminal_args(&term.display().to_string(), &program);
+
+    let mut child = Command::new(term)
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| format!("running terminal {}", term.display()))?;
+
+    // Own the outer deadline like the launcher menu does; the TUI also gets
+    // `--timeout` so it dismisses itself first.
+    let _finished = launcher::wait_or_kill(&mut child, prefs.popup_timeout)?;
+
+    let choice = std::fs::read_to_string(&report)
+        .ok()
+        .map(|t| t.trim().to_owned())
+        .filter(|t| !t.is_empty());
+    let _ = std::fs::remove_file(&report);
+
+    match choice {
+        Some(choice) => println!("{choice}"),
+        None => eprintln!("popup dismissed (or timed out)"),
+    }
+    Ok(())
+}
+
 fn remind_include(paths: &NiriDMPaths) -> Result<()> {
     let main = NiriDMPaths::niri_main_config();
     let line = format!("include optional=true \"{}\"", paths.monitors.display());
@@ -653,8 +851,13 @@ fn init_files(paths: &NiriDMPaths) -> Result<()> {
 // NiriDM preferences. Every key is optional; the values below are the
 // defaults. This file is only created when missing, so edit freely.
 config {
-    // Launchers tried in order when a new monitor needs a decision.
+    // Launchers tried in order when a new monitor needs a decision
+    // (used when popup-ui is \"menu\", or as the fallback).
     popup-providers \"fuzzel\" \"wofi\" \"bemenu\" \"yad\" \"zenity\" \"dmenu\"
+    // How the popup asks: \"tui\" (full-screen settings) or \"menu\".
+    popup-ui \"tui\"
+    // Terminals tried, in order, to host the TUI popup.
+    popup-terminals \"alacritty\" \"foot\" \"kitty\" \"wezterm\" \"ghostty\" \"xterm\"
     // Seconds the popup waits before giving up.
     popup-timeout 20
     // Save the chosen arrangement so this monitor set never asks again.

@@ -29,8 +29,13 @@ Implemented:
   (`ndm popup`), or remembers known monitors automatically.
 - **Config reload** — writes are verified against the niri event stream
   (`ConfigLoaded` after the write) with automatic rollback on a rejected KDL.
-- **Popup provider chain** — `fuzzel → wofi → bemenu → yad → zenity → dmenu`,
-  with a timeout so an unattended prompt can't block the daemon.
+- **Settings TUI** — when a monitor is plugged in, `ndm popup` opens a
+  full-screen settings screen (`ndm tui`) in a terminal: arrangement
+  (extend left/right, mirror, only-this, off), resolution, scale, position,
+  transform, and VRR, with *apply* and *apply & save* — no launcher required.
+- **Popup provider chain** — when no terminal is available (or `popup-ui` is
+  `menu`), falls back to `fuzzel → wofi → bemenu → yad → zenity → dmenu`, with a
+  timeout so an unattended prompt can't block the daemon.
 - **Mirror** — `ndm mirror SRC [DST]` spawns `wl-mirror` and steers its window
   to the target output, fullscreen, via the event stream.
 - **Workspace routing** — `ndm route WS OUT` pins a workspace to an output
@@ -101,6 +106,7 @@ ndm mirror <src> [dst]           # mirror src onto dst (dst defaults to focused 
 ndm route <workspace> [output]   # pin a workspace to an output (no output = unpin)
 ndm switch <workspace> <output>  # move workspace to output transiently
 ndm popup [output] [--provider P] [--timeout S]
+ndm tui [--new OUTPUT] [--report PATH] [--timeout S]
 ndm list                         # saved layouts
 ndm daemon [--poll-ms N] [--settle-ms N] [--once] [--no-popup] [--popup-cmd C]
 ```
@@ -116,6 +122,8 @@ config {
     poll-interval-ms 1000       // daemon poll interval
     settle-ms 300               // wait this long after a hotplug before acting
     popup-timeout 30            // seconds before the popup auto-dismisses
+    popup-ui "tui"              // "tui" (settings screen) or "menu" (launcher chain)
+    popup-terminals "alacritty" "foot" "kitty" "wezterm" "ghostty" "xterm"
     remember-new-monitors true  // auto-apply without prompting when true
     popup-providers "fuzzel" "wofi" "bemenu" "yad" "zenity" "dmenu"
     mirror-tool "wl-mirror"
@@ -138,8 +146,11 @@ rejected by niri is rolled back to the previous content.
   `--wl-mirror`). The NixOS and home-manager modules install `pkgs.wl-mirror`
   by default (`programs.NiriDM.mirror.enable`). NDM steers the `wl-mirror`
   window by PID (fallback: app-id/title match), so it survives races with
-  niri's focus.
+  niri's focus. The TUI's *Mirror* arrangement launches `ndm mirror` detached,
+  so the mirror keeps running after the settings window closes.
 - **Popup providers** are probed in order; the first executable found is used.
+  With `popup-ui "tui"` (the default) they are only the fallback for when no
+  terminal from `popup-terminals` is installed.
 - **IPC stability** — niri's JSON event stream has been stable since 24.11;
   unknown event variants are ignored for forward compatibility.
 
