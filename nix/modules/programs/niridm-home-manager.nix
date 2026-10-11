@@ -19,6 +19,23 @@ let
   inherit (lib.types) bool ints package listOf str;
 
   cfg = config.programs.NiriDM;
+
+  providersLine =
+    builtins.concatStringsSep " " (map (p: "\"${p}\"") cfg.popupProvider);
+
+  # First-login bootstrap: `ndm init` writes config.kdl/layouts.kdl/
+  # monitors.kdl (never overwrites). When popupProvider is set we customise
+  # the freshly created config.kdl exactly once; afterwards it is user-owned.
+  initScript = pkgs.writeShellScript "ndm-init" ''
+    set -eu
+    HOME_CONFIG="$HOME/.config/NiriDM/config.kdl"
+    ${cfg.package}/bin/ndm init >/dev/null
+    ${lib.optionalString (cfg.popupProvider != [ ]) ''
+      if grep -q '^    popup-providers ' "$HOME_CONFIG"; then
+        sed -i 's|^    popup-providers .*|    popup-providers ${providersLine}|' "$HOME_CONFIG"
+      fi
+    ''}
+  '';
 in
 {
   options.programs.NiriDM = {
@@ -97,7 +114,7 @@ in
       Service = {
         Type = "oneshot";
         RemainAfterExit = true;
-        ExecStart = "${cfg.package}/bin/ndm init";
+        ExecStart = initScript;
       };
       Install = {
         WantedBy = [ "niri.service" ];

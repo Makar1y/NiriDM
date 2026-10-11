@@ -41,6 +41,9 @@ Implemented:
 
 ## Quick start
 
+See [docs/INSTALL.md](docs/INSTALL.md) for the full installation guide
+(prerequisites, all module options, standalone/manual installs, troubleshooting).
+
 ### From this flake (NixOS / home-manager)
 
 ```nix
