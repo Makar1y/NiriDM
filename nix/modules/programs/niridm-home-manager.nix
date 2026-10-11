@@ -20,6 +20,30 @@ let
 
   cfg = config.programs.NiriDM;
 
+  # The daemon shells out to `niri msg` and to the popup launcher / wl-mirror,
+  # but systemd user units get a minimal PATH. Resolve niri from the niri
+  # home-manager module (niri-flake exposes `programs.niri.package`) and build a
+  # PATH covering the packages plus the usual user/system profiles.
+  niriPackage = lib.attrByPath [ "programs" "niri" "package" ] null config;
+
+  sessionPath = lib.makeBinPath (
+    lib.optional (niriPackage != null) niriPackage
+    ++ lib.optional cfg.mirror.enable cfg.mirror.package
+  );
+
+  daemonPath = lib.concatStringsSep ":" (
+    lib.optional (sessionPath != "") sessionPath
+    ++ [
+      "${config.home.homeDirectory}/.nix-profile/bin"
+      "/etc/profiles/per-user/${config.home.username}/bin"
+      "/run/current-system/sw/bin"
+      "/run/wrappers/bin"
+    ]
+  );
+
+  daemonEnvironment = lib.optional (niriPackage != null)
+    "NiriDM_NIRI_BIN=${niriPackage}/bin/niri" ++ [ "PATH=${daemonPath}" ];
+
   providersLine =
     builtins.concatStringsSep " " (map (p: "\"${p}\"") cfg.popupProvider);
 
@@ -99,6 +123,7 @@ in
           "${cfg.package}/bin/ndm daemon --poll-ms ${toString cfg.pollInterval}";
         Restart = "on-failure";
         RestartSec = 5;
+        Environment = daemonEnvironment;
       };
       Install = {
         WantedBy = [ "niri.service" ];

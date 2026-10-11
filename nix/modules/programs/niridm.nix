@@ -20,6 +20,12 @@ let
 
   cfg = config.programs.NiriDM;
 
+  # The daemon shells out to `niri msg` and to the popup launcher / wl-mirror.
+  # systemd user units get a minimal PATH, so resolve niri from the niri module
+  # (nixpkgs or niri-flake both expose `programs.niri.package`) and put the
+  # system profile on PATH for launchers.
+  niriPackage = lib.attrByPath [ "programs" "niri" "package" ] null config;
+
   providersLine =
     builtins.concatStringsSep " " (map (p: "\"${p}\"") cfg.popupProvider);
 
@@ -108,12 +114,21 @@ in
       wantedBy = [ "niri.service" ];
       after = [ "graphical-session.target" ];
       partOf = [ "graphical-session.target" ];
+
+      # The unit otherwise gets systemd's minimal PATH; add the system profile
+      # (for the user's niri, launcher, wl-mirror) plus the niri/mirror packages.
+      path = [ config.system.path ]
+        ++ lib.optional (niriPackage != null) niriPackage
+        ++ lib.optional cfg.mirror.enable cfg.mirror.package;
+
       serviceConfig = {
         Type = "simple";
         ExecStart =
           "${cfg.package}/bin/ndm daemon --poll-ms ${toString cfg.pollInterval}";
         Restart = "on-failure";
         RestartSec = 5;
+        Environment = lib.optional (niriPackage != null)
+          "NiriDM_NIRI_BIN=${niriPackage}/bin/niri";
       };
     };
   };
