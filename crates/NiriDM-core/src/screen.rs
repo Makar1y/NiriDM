@@ -54,11 +54,49 @@ impl Arrangement {
     }
 }
 
+/// Mirror scaling modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MirrorScaleMode {
+    Fit,
+    Cover,
+    Exact,
+}
+
+impl MirrorScaleMode {
+    pub const ALL: [MirrorScaleMode; 3] = [
+        MirrorScaleMode::Fit,
+        MirrorScaleMode::Cover,
+        MirrorScaleMode::Exact,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            MirrorScaleMode::Fit => "fit",
+            MirrorScaleMode::Cover => "cover",
+            MirrorScaleMode::Exact => "exact",
+        }
+    }
+
+    pub fn as_arg(self) -> &'static str {
+        self.label()
+    }
+
+    pub fn index(self) -> usize {
+        match self {
+            MirrorScaleMode::Fit => 0,
+            MirrorScaleMode::Cover => 1,
+            MirrorScaleMode::Exact => 2,
+        }
+    }
+}
+
 /// An adjustable row of the settings screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Field {
     Arrangement,
     MirrorFrom,
+    MirrorCursor,
+    MirrorScaling,
     Resolution,
     Scale,
     Position,
@@ -71,6 +109,8 @@ impl Field {
         match self {
             Field::Arrangement => "Arrangement",
             Field::MirrorFrom => "Mirror from",
+            Field::MirrorCursor => "Mirror cursor",
+            Field::MirrorScaling => "Mirror scaling",
             Field::Resolution => "Resolution",
             Field::Scale => "Scale",
             Field::Position => "Position",
@@ -103,6 +143,8 @@ pub struct Screen {
     pub arrangement: Arrangement,
     /// Source connector when `arrangement == Mirror`.
     pub mirror_from: Option<String>,
+    pub mirror_cursor: bool,
+    pub mirror_scaling: MirrorScaleMode,
     /// Index into the target's `modes`.
     pub mode_idx: usize,
     pub scale: f64,
@@ -144,6 +186,8 @@ impl Screen {
             target,
             arrangement: Arrangement::ExtendRight,
             mirror_from,
+            mirror_cursor: true,
+            mirror_scaling: MirrorScaleMode::Fit,
             mode_idx,
             scale,
             transform,
@@ -171,6 +215,8 @@ impl Screen {
         let mut fields = vec![Field::Arrangement];
         if self.arrangement == Arrangement::Mirror {
             fields.push(Field::MirrorFrom);
+            fields.push(Field::MirrorCursor);
+            fields.push(Field::MirrorScaling);
         }
         if self.arrangement != Arrangement::Off {
             fields.push(Field::Resolution);
@@ -263,6 +309,15 @@ impl Screen {
                 self.transform = TRANSFORMS[(cur + delta).rem_euclid(n) as usize];
             }
             Field::Vrr => self.vrr = !self.vrr,
+            Field::MirrorCursor => self.mirror_cursor = !self.mirror_cursor,
+            Field::MirrorScaling => {
+                let idx = self
+                    .mirror_scaling
+                    .index()
+                    .saturating_add(1)
+                    .min(MirrorScaleMode::ALL.len() - 1);
+                self.mirror_scaling = MirrorScaleMode::ALL[idx];
+            }
         }
     }
 
