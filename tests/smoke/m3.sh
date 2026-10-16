@@ -62,6 +62,13 @@ NDM_MOCK_STATE=$F/state-b.json "$DAEMON" --once
 test ! -e "$L" && echo "OK: popup not re-invoked"
 
 echo
+echo "== replug an already-known set still prompts (always prompt on hotplug) =="
+NDM_MOCK_STATE=$F/state-a.json "$DAEMON" --once     # unplug DP-9: shrink, no popup
+rm -f "$L"
+NDM_MOCK_STATE=$F/state-b.json "$DAEMON" --once     # replug DP-9: a layout matches, but still prompt
+test -e "$L" && echo "OK: popup invoked even though a layout matched"
+
+echo
 echo "== direct ndm popup stdout contract =="
 rm -f "$L"
 out=$(NDM_MOCK_STATE=$F/state-b.json "$NDM" popup DP-9)

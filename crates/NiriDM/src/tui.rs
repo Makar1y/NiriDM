@@ -215,7 +215,13 @@ fn field_row(screen: &Screen, field: Field) -> (String, String) {
             .mirror_from
             .clone()
             .unwrap_or_else(|| "— no source —".into()),
-        Field::MirrorCursor => if screen.mirror_cursor { "show".to_string() } else { "hide".to_string() },
+        Field::MirrorCursor => {
+            if screen.mirror_cursor {
+                "show".to_string()
+            } else {
+                "hide".to_string()
+            }
+        }
         Field::MirrorScaling => screen.mirror_scaling.label().to_string(),
         Field::Resolution => screen.mode_string().unwrap_or_else(|| "off".into()),
         Field::Scale => format!("{:.2}", screen.scale),

@@ -152,9 +152,22 @@ fn load_layouts(path: &PathBuf) -> Result<Vec<ndm_core::layout::Layout>> {
 }
 
 fn save_layouts(path: &PathBuf, layouts: &[ndm_core::layout::Layout]) -> Result<()> {
-    let text = ndm_core::kdl::emit_layouts(layouts);
-    std::fs::write(path, text).with_context(|| format!("failed to write {}", path.display()))?;
-    Ok(())
+    std::fs::write(path, ndm_core::kdl::emit_layouts(layouts))
+        .with_context(|| format!("failed to write {}", path.display()))
+}
+
+/// Insert `layout` into `layouts`, replacing any existing `auto` layout that
+/// targets the same monitor set. Without this, an older `auto` layout for the
+/// set stays ahead in file order and silently shadows the new decision.
+fn store_auto_layout(
+    layouts: &mut Vec<ndm_core::layout::Layout>,
+    layout: ndm_core::layout::Layout,
+) {
+    layouts.retain(|l| {
+        l.name != layout.name
+            && !(l.name.starts_with("auto ") && ndm_core::layout::same_connector_set(l, &layout))
+    });
+    layouts.push(layout);
 }
 
 /// Write `monitors.kdl` for `layout`, skipping the write when it would be a
@@ -549,7 +562,11 @@ fn steer_window(niri: &Niri, id: u64, target: &str) -> Result<()> {
     Ok(())
 }
 
-fn spawn_mirror(tool: &std::path::Path, src: &str, fullscreen_target: Option<&str>) -> Result<Child> {
+fn spawn_mirror(
+    tool: &std::path::Path,
+    src: &str,
+    fullscreen_target: Option<&str>,
+) -> Result<Child> {
     let mut cmd = Command::new(tool);
     cmd.arg(src);
     if let Some(tgt) = fullscreen_target {
@@ -647,9 +664,8 @@ fn run_popup(
 
     if prefs.remember_new_monitors {
         let mut layouts = layouts;
-        layouts.retain(|l| l.name != layout.name);
         let name = layout.name.clone();
-        layouts.push(layout.clone());
+        store_auto_layout(&mut layouts, layout.clone());
         save_layouts(&paths.layouts, &layouts)?;
         eprintln!("saved layout `{name}`");
     }
@@ -699,7 +715,8 @@ fn run_tui(
         bail!("output `{target}` is not connected");
     }
 
-    let mut screen = Screen::new(outputs.clone(), &target)?;
+    let layouts = load_layouts(&paths.layouts)?;
+    let mut screen = Screen::new_preselecting(outputs.clone(), &target, &layouts)?;
     let ctx = PopupContext {
         connected: outputs,
         new: vec![target.clone()],
@@ -723,8 +740,7 @@ fn run_tui(
             let do_save = save || prefs.remember_new_monitors;
             if do_save {
                 let mut layouts = load_layouts(&paths.layouts)?;
-                layouts.retain(|l| l.name != layout.name);
-                layouts.push(layout.clone());
+                store_auto_layout(&mut layouts, layout.clone());
                 save_layouts(&paths.layouts, &layouts)?;
                 eprintln!("saved layout `{}`", layout.name);
             }

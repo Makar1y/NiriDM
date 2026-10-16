@@ -197,6 +197,72 @@ impl Screen {
         })
     }
 
+    /// Like [`Screen::new`], but pre-selects the arrangement, mode and mirror
+    /// source from the first saved layout that applies to the connected set, so
+    /// the popup opens on the last decision instead of a blank default.
+    pub fn new_preselecting(
+        outputs: Vec<Output>,
+        target: &str,
+        layouts: &[Layout],
+    ) -> Result<Self> {
+        let mut screen = Self::new(outputs, target)?;
+        if let Ok(layout) = crate::layout::find_matching(layouts, &screen.outputs) {
+            screen.preselect(layout);
+        }
+        Ok(screen)
+    }
+
+    /// Adopt the placement encoded in `layout` for the target monitor.
+    fn preselect(&mut self, layout: &Layout) {
+        let Some(t) = layout.outputs.iter().find(|o| o.connector == self.target) else {
+            return;
+        };
+
+        if let Some(mode) = &t.mode {
+            if let Some(i) = self
+                .target_output()
+                .and_then(|o| o.modes.iter().position(|m| m.to_string() == *mode))
+            {
+                self.mode_idx = i;
+            }
+        }
+        if let Some(s) = t.scale {
+            self.scale = s;
+        }
+        if let Some(tr) = t.transform {
+            self.transform = tr;
+        }
+        self.vrr = t.vrr;
+
+        match &t.role {
+            Role::Off => self.arrangement = Arrangement::Off,
+            Role::MirrorOf(src) => {
+                self.arrangement = Arrangement::Mirror;
+                self.mirror_from = Some(src.clone());
+            }
+            Role::Normal => {
+                let others: Vec<&crate::layout::ManagedOutput> = layout
+                    .outputs
+                    .iter()
+                    .filter(|o| o.connector != self.target && o.enabled())
+                    .collect();
+                if others.is_empty() {
+                    self.arrangement = Arrangement::OnlyThis;
+                } else {
+                    let tx = t.position.map(|(x, _)| x).unwrap_or(0);
+                    let left = others
+                        .iter()
+                        .filter_map(|o| o.position.map(|(x, _)| x))
+                        .min();
+                    self.arrangement = match left {
+                        Some(mx) if tx < mx => Arrangement::ExtendLeft,
+                        _ => Arrangement::ExtendRight,
+                    };
+                }
+            }
+        }
+    }
+
     pub fn target_output(&self) -> Option<&Output> {
         self.outputs.iter().find(|o| o.name == self.target)
     }
@@ -626,6 +692,35 @@ mod tests {
             .unwrap();
         assert_eq!(dp9.role, Role::Off);
         assert_eq!(edp.role, Role::Normal);
+    }
+
+    #[test]
+    fn preselects_the_matching_saved_layout() {
+        let outputs = vec![
+            output("eDP-1", 0, 1920, true),
+            output("DP-9", 1920, 1080, true),
+        ];
+        let mut saved = capture_layout("auto mirror DP-9 of eDP-1", &outputs);
+        let idx = saved
+            .outputs
+            .iter()
+            .position(|o| o.connector == "DP-9")
+            .unwrap();
+        saved.outputs[idx].role = Role::MirrorOf("eDP-1".into());
+
+        let s = Screen::new_preselecting(outputs, "DP-9", &[saved]).unwrap();
+        assert_eq!(s.arrangement, Arrangement::Mirror);
+        assert_eq!(s.mirror_from.as_deref(), Some("eDP-1"));
+    }
+
+    #[test]
+    fn preselecting_without_a_match_keeps_the_default() {
+        let outputs = vec![
+            output("eDP-1", 0, 1920, true),
+            output("DP-9", 1920, 1080, true),
+        ];
+        let s = Screen::new_preselecting(outputs, "DP-9", &[]).unwrap();
+        assert_eq!(s.arrangement, Arrangement::ExtendRight);
     }
 
     #[test]

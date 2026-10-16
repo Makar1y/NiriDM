@@ -96,7 +96,13 @@ fn main() -> Result<()> {
     };
 
     let mut debounce = Debounce::new(settle);
-    let mut previous: Vec<String> = Vec::new();
+    // The connected set from the previous run persists across restarts, so a
+    // monitor plugged while the daemon was down is still recognised as new.
+    let last_set = paths.dir.join("last-set");
+    let mut previous = read_set(&last_set);
+    // Only prompt once we have a baseline: the very first run seeds it from the
+    // monitors already connected, so *starting* the daemon is never a hotplug.
+    let mut have_baseline = last_set.exists();
 
     loop {
         let outputs = match niri.outputs() {
@@ -122,14 +128,27 @@ fn main() -> Result<()> {
             tracing::debug!("change settled: {fp:?}");
         }
 
-        // While settled, keep monitors.kdl converging on the matching layout.
+        // While settled, keep monitors.kdl converging on the matching layout,
+        // and prompt whenever a monitor was just plugged in.
         if debounce.settled().is_some() || fired.is_some() {
-            if let Err(e) = step(&paths, &outputs, fired.as_ref(), &previous, &*popup) {
+            if let Err(e) = step(
+                &paths,
+                &outputs,
+                fired.as_ref(),
+                &previous,
+                have_baseline,
+                &*popup,
+            ) {
                 if cli.once {
                     return Err(e);
                 }
                 tracing::warn!("step failed: {e:#}");
             }
+            let now: Vec<String> = outputs.iter().map(|o| o.name.clone()).collect();
+            if let Err(e) = write_set(&last_set, &now) {
+                tracing::warn!("could not persist last-set: {e:#}");
+            }
+            have_baseline = true;
         }
 
         if fired.is_some() {
@@ -142,6 +161,20 @@ fn main() -> Result<()> {
     }
 }
 
+/// Connector names recorded by the previous daemon run.
+fn read_set(path: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .map(|t| t.split_whitespace().map(str::to_owned).collect())
+        .unwrap_or_default()
+}
+
+/// Best-effort persistence of the current connector names.
+fn write_set(path: &std::path::Path, names: &[String]) -> Result<()> {
+    let text = format!("{}\n", names.join(" "));
+    ndm_core::paths::write_if_changed(path, &text)?;
+    Ok(())
+}
+
 /// A sibling binary of this executable, e.g. `ndm` next to `ndm-daemon`.
 fn sibling_binary(name: &str) -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
@@ -149,17 +182,42 @@ fn sibling_binary(name: &str) -> Option<PathBuf> {
     sibling.is_file().then_some(sibling)
 }
 
-/// One step of the state machine: auto-apply the matching layout, and — only
-/// when the connected set just changed — trigger the popup if nothing matches.
+/// One step of the state machine. Whenever a monitor was just plugged in the
+/// popup opens — even if a saved layout already matches — so the user always
+/// gets to confirm or change the arrangement; the matching layout is
+/// pre-selected inside the popup. Afterwards `monitors.kdl` is converged on the
+/// first matching layout (which the popup may have just replaced).
 fn step(
     paths: &NiriDMPaths,
     outputs: &[ndm_core::types::Output],
     fired: Option<&String>,
     previous: &[String],
+    have_baseline: bool,
     popup: &dyn PopupProvider,
 ) -> Result<()> {
-    let layouts = load_layouts(&paths.layouts)?;
+    if fired.is_some() && have_baseline {
+        let new: Vec<String> = outputs
+            .iter()
+            .filter(|o| !previous.iter().any(|p| p == &o.name))
+            .map(|o| o.name.clone())
+            .collect();
+        // A shrink (unplug) has nothing to decide; only growth prompts.
+        if !new.is_empty() {
+            let layouts = load_layouts(&paths.layouts)?;
+            let ctx = PopupContext {
+                connected: outputs.to_vec(),
+                new,
+                layouts: layouts.iter().map(|l| l.name.clone()).collect(),
+            };
+            match popup.show(&ctx) {
+                Ok(Some(choice)) => tracing::info!("popup chose `{choice}`"),
+                Ok(None) => tracing::debug!("popup dismissed; keeping the matching layout"),
+                Err(e) => tracing::warn!("popup failed: {e:#}"),
+            }
+        }
+    }
 
+    let layouts = load_layouts(&paths.layouts)?;
     match find_matching(&layouts, outputs) {
         Ok(layout) => {
             let kdl = generate_monitors_kdl(outputs, layout);
@@ -168,40 +226,8 @@ fn step(
                 tracing::info!("applied layout `{}`", layout.name);
             }
         }
-        Err(e) => {
-            // Only prompt when the set actually changed; otherwise the popup
-            // would reappear on every poll.
-            let Some(_changed_at) = fired else {
-                return Ok(());
-            };
-            tracing::debug!("{e}");
-            let new: Vec<String> = outputs
-                .iter()
-                .filter(|o| !previous.iter().any(|p| p == &o.name))
-                .map(|o| o.name.clone())
-                .collect();
-            // An unrecognised set with nothing newly plugged in (cables
-            // shuffled between known monitors): there is no decision to make.
-            if new.is_empty() {
-                tracing::warn!(
-                    "no matching layout and no new monitor; leaving outputs as they are"
-                );
-                return Ok(());
-            }
-            let ctx = PopupContext {
-                connected: outputs.to_vec(),
-                new,
-                layouts: layouts.iter().map(|l| l.name.clone()).collect(),
-            };
-            match popup.show(&ctx) {
-                Ok(Some(choice)) => {
-                    tracing::info!(
-                        "popup chose `{choice}`; the layout is saved, next poll converges"
-                    );
-                }
-                Ok(None) => tracing::debug!("popup dismissed; leaving outputs as they are"),
-                Err(e) => tracing::warn!("popup failed: {e:#}"),
-            }
+        Err(_) => {
+            tracing::debug!("no layout matches the connected set; leaving outputs as they are")
         }
     }
     Ok(())

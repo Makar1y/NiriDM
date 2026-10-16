@@ -203,6 +203,19 @@ pub fn find_matching<'a>(layouts: &'a [Layout], connected: &[Output]) -> Result<
         .ok_or(crate::error::NdError::NoMatchingLayout(layouts.len()))
 }
 
+/// True when both layouts manage the same set of connectors (order-insensitive).
+///
+/// Two `auto` layouts that cover the same set shadow each other — only the
+/// first in file order ever wins — so a fresh decision for a set replaces any
+/// earlier `auto` layout for it.
+pub fn same_connector_set(a: &Layout, b: &Layout) -> bool {
+    let mut x: Vec<&str> = a.outputs.iter().map(|o| o.connector.as_str()).collect();
+    let mut y: Vec<&str> = b.outputs.iter().map(|o| o.connector.as_str()).collect();
+    x.sort_unstable();
+    y.sort_unstable();
+    x == y
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,6 +294,32 @@ mod tests {
         };
         let p = vec![tied_output("DP-1", "P2723QE", "C", true)];
         assert!(l.matches(&p));
+    }
+
+    #[test]
+    fn same_connector_set_ignores_order_and_roles() {
+        let a = capture_layout(
+            "auto extend-right DP-1",
+            &[
+                tied_output("DP-1", "Dell", "A", true),
+                tied_output("eDP-1", "Laptop", "B", true),
+            ],
+        );
+        let mut b = capture_layout(
+            "auto turn-off DP-1",
+            &[
+                tied_output("eDP-1", "Laptop", "B", true),
+                tied_output("DP-1", "Dell", "A", true),
+            ],
+        );
+        b.outputs[1].role = Role::Off;
+        assert!(same_connector_set(&a, &b));
+
+        let single = capture_layout(
+            "auto extend-right eDP-1",
+            &[tied_output("eDP-1", "Laptop", "B", true)],
+        );
+        assert!(!same_connector_set(&a, &single));
     }
 
     #[test]
