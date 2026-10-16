@@ -26,7 +26,7 @@ echo "== ndm route Chat eDP-1 (partition off a workspace) =="
 "$NDM" route Chat eDP-1 2>/dev/null
 echo "--- monitors.kdl:"
 cat "$CFG/monitors.kdl"
-grep -q 'workspace "Chat" {' "$CFG/monitors.kdl" && grep -A1 'workspace "Chat" {' "$CFG/monitors.kdl" | grep -q 'output "eDP-1"' && echo "OK: monitors.kdl pins Chat to eDP-1"
+grep -q 'workspace "Chat" {' "$CFG/monitors.kdl" && grep -A1 'workspace "Chat" {' "$CFG/monitors.kdl" | grep -q 'open-on-output "eDP-1"' && echo "OK: monitors.kdl pins Chat to eDP-1"
 grep -q 'workspace "Chat" output="eDP-1"' "$CFG/layouts.kdl" && echo "OK: layouts.kdl holds the route"
 
 echo

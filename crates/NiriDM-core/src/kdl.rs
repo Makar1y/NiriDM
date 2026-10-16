@@ -50,7 +50,7 @@ pub fn generate_monitors_kdl(connected: &[Output], layout: &Layout) -> String {
 
     for (workspace, connector) in &layout.workspaces {
         let _ = writeln!(out, "workspace {workspace:?} {{");
-        let _ = writeln!(out, "    output {connector:?}");
+        let _ = writeln!(out, "    open-on-output {connector:?}");
         out.push_str("}\n");
     }
 
@@ -677,9 +677,9 @@ layout "Docked" {
         let kdl = generate_monitors_kdl(&connected, &layouts[0]);
 
         // routes live in layouts.kdl as `output="..."` props; in monitors.kdl
-        // they become niri's `workspace "name" { output "X" }` shape.
+        // they become niri's `workspace "name" { open-on-output "X" }` shape.
         assert!(
-            kdl.contains("workspace \"Chat\" {\n    output \"DP-1\"\n}\n"),
+            kdl.contains("workspace \"Chat\" {\n    open-on-output \"DP-1\"\n}\n"),
             "workspace block missing:\n{kdl}"
         );
     }
