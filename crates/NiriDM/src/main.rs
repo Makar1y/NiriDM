@@ -490,7 +490,7 @@ fn run_mirror(
     eprintln!("mirroring {src} -> {target} via {}", tool.display());
     eprintln!("close the mirror window (or stop this process) to end the mirror");
 
-    let mut child = spawn_mirror(&tool, src)?;
+    let mut child = spawn_mirror(&tool, src, Some(&target))?;
     let mut stream = EventStream::open()?;
     let mut current_window: Option<u64> = None;
 
@@ -532,7 +532,7 @@ fn run_mirror(
             Some(status) => {
                 tracing::warn!("wl-mirror died ({status}); restarting");
                 std::thread::sleep(Duration::from_secs(1));
-                child = spawn_mirror(&tool, src)?;
+                child = spawn_mirror(&tool, src, Some(&target))?;
                 current_window = None;
             }
             None => {}
@@ -549,10 +549,13 @@ fn steer_window(niri: &Niri, id: u64, target: &str) -> Result<()> {
     Ok(())
 }
 
-fn spawn_mirror(tool: &std::path::Path, src: &str) -> Result<Child> {
-    Command::new(tool)
-        .arg(src)
-        .stdin(Stdio::null())
+fn spawn_mirror(tool: &std::path::Path, src: &str, fullscreen_target: Option<&str>) -> Result<Child> {
+    let mut cmd = Command::new(tool);
+    cmd.arg(src);
+    if let Some(tgt) = fullscreen_target {
+        cmd.args(["--fullscreen-output", tgt]);
+    }
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
