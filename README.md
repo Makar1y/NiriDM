@@ -2,7 +2,7 @@
 
 Monitor layout management for the [niri](https://github.com/YaLTeR/niri) Wayland
 compositor: named layouts, per-monitor settings, mirror/second-display routing,
-and a quick setup popup when a monitor is plugged in.
+and a settings popup when a monitor is plugged in.
 
 All state lives in `~/.config/NiriDM/` (KDL). Commands talk to niri over its
 IPC (`niri msg` / `niri msg --json`) and apply configuration by writing an
@@ -15,8 +15,10 @@ IPC (`niri msg` / `niri msg --json`) and apply configuration by writing an
 - Linux with a [niri](https://github.com/YaLTeR/niri) session **≥ 26.04**
   (`include optional=true` and live reload of included files).
 - `niri msg` available on `PATH` (ships with niri).
-- Optional: an interactive launcher for the popup (see
-  [Configuration](#configuration)) and `wl-mirror` for `ndm mirror`.
+- For the popup: a terminal (`alacritty`, `foot`, `kitty`, `wezterm`, `ghostty`,
+  or `xterm`), or an interactive launcher (`fuzzel`, `wofi`, `bemenu`, `yad`,
+  `zenity`, `dmenu`) as fallback — see [Configuration](#configuration).
+- `wl-mirror` for `ndm mirror`.
 
 ## Status
 
@@ -25,7 +27,7 @@ Implemented:
 - **Layouts** — capture/apply named monitor arrangements (`ndm capture`,
   `ndm apply`, auto-match by connected set).
 - **Hotplug daemon** — polls niri's output list with a settle window; when the
-  monitor set changes and no layout matches, it launches the quick-setup popup
+  monitor set changes and no layout matches, it opens the settings popup
   (`ndm popup`), or remembers known monitors automatically.
 - **Config reload** — writes are verified against the niri event stream
   (`ConfigLoaded` after the write) with automatic rollback on a rejected KDL.
@@ -131,7 +133,8 @@ config {
 ```
 
 `layouts.kdl` stores named layouts; `monitors.kdl` is **generated** (by
-`apply` / `monitor` / `route` / the daemon) and is the only file niri includes.
+`apply` / `monitor` / `route` / `tui` / the daemon) and is the only file niri
+includes.
 
 Each write is verified: NDM opens the niri event stream before writing, then
 waits for the `ConfigLoaded` event that corresponds to the write. A config
