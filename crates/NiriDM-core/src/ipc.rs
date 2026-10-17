@@ -67,6 +67,12 @@ impl Niri {
         serde_json::from_value(value).map_err(|e| NdError::Json("niri msg --json windows", e))
     }
 
+    /// Query the current workspace list.
+    pub fn workspaces(&self) -> Result<Vec<crate::events::Workspace>> {
+        let value = self.run_msg(&["--json", "workspaces"])?;
+        serde_json::from_value(value).map_err(|e| NdError::Json("niri msg --json workspaces", e))
+    }
+
     /// `niri msg --json <args...>`; returns the JSON inner content, unwrapping
     /// the `{"Ok": ...}` / `{"Err": ...}` envelope that `niri msg` uses.
     pub fn run_msg(&self, args: &[&str]) -> Result<serde_json::Value> {

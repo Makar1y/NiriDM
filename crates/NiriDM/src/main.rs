@@ -54,6 +54,12 @@ enum Cmd {
         /// Mirror tool to use (overrides `mirror-tool` in config.kdl).
         #[arg(long, value_name = "PATH")]
         wl_mirror: Option<PathBuf>,
+        /// Only mirror when this workspace is focused (freeze otherwise).
+        #[arg(long, value_name = "WORKSPACE")]
+        workspace: Option<String>,
+        /// Only mirror when an app with this ID is focused (freeze otherwise).
+        #[arg(long, value_name = "APP_ID")]
+        app: Option<String>,
     },
     /// Assign a workspace to an output in the active layout (persistent, via
     /// generated `workspace` blocks). A route means the workspace only ever
@@ -321,8 +327,10 @@ fn main() -> Result<()> {
             src,
             dst,
             wl_mirror,
+            workspace,
+            app,
         } => {
-            run_mirror(&paths, &niri, &src, dst.as_deref(), wl_mirror.as_deref())?;
+            run_mirror(&paths, &niri, &src, dst.as_deref(), wl_mirror.as_deref(), workspace.as_deref(), app.as_deref())?;
         }
         Cmd::Route { workspace, output } => {
             run_route(&paths, &niri, &workspace, output.as_deref())?;
@@ -459,6 +467,8 @@ fn run_mirror(
     src: &str,
     dst: Option<&str>,
     wl_mirror: Option<&std::path::Path>,
+    workspace_filter: Option<&str>,
+    app_filter: Option<&str>,
 ) -> Result<()> {
     use ndm_core::events::{Event, EventStream};
 
@@ -495,9 +505,71 @@ fn run_mirror(
     eprintln!("mirroring {src} -> {target} via {}", tool.display());
     eprintln!("close the mirror window (or stop this process) to end the mirror");
 
-    let mut child = spawn_mirror(&tool, src, Some(&target))?;
+    let use_stream = workspace_filter.is_some() || app_filter.is_some();
+    let mut child = spawn_mirror(&tool, src, Some(&target), use_stream)?;
     let mut stream = EventStream::open()?;
     let mut current_window: Option<u64> = None;
+    let mut frozen = false;
+
+    // Build workspace map
+    let mut workspace_map: std::collections::HashMap<u64, String> = std::collections::HashMap::new();
+    if use_stream {
+        if let Ok(ws) = niri.workspaces() {
+            for w in ws {
+                if let Some(name) = &w.name {
+                    workspace_map.insert(w.id, name.clone());
+                } else {
+                    workspace_map.insert(w.id, w.idx.to_string());
+                }
+            }
+        }
+    }
+
+    fn send_cmd(child: &mut Child, cmd: &str) -> Result<()> {
+        if let Some(stdin) = child.stdin.as_mut() {
+            use std::io::Write;
+            let _ = writeln!(stdin, "{}", cmd);
+        }
+        Ok(())
+    }
+
+    fn update_freeze(
+        child: &mut Child,
+        frozen: &mut bool,
+        should_freeze: bool,
+    ) -> Result<()> {
+        if should_freeze && !*frozen {
+            send_cmd(child, "freeze")?;
+            *frozen = true;
+        } else if !should_freeze && *frozen {
+            send_cmd(child, "unfreeze")?;
+            *frozen = false;
+        }
+        Ok(())
+    }
+
+    fn matches_filter(
+        workspace_filter: Option<&str>,
+        app_filter: Option<&str>,
+        window: &ndm_core::events::Window,
+        workspace_map: &std::collections::HashMap<u64, String>,
+    ) -> bool {
+        let mut ok = true;
+        if let Some(wf) = workspace_filter {
+            let wname = window
+                .workspace_id
+                .as_ref()
+                .and_then(|id| workspace_map.get(id))
+                .map(|s| s.as_str())
+                .unwrap_or("");
+            ok = ok && wname.eq_ignore_ascii_case(wf);
+        }
+        if let Some(af) = app_filter {
+            let app = window.app_id.as_deref().unwrap_or("");
+            ok = ok && app.eq_ignore_ascii_case(af);
+        }
+        ok
+    }
 
     loop {
         // An existing wl-mirror window (started before us, or our own) is
@@ -525,6 +597,27 @@ fn run_mirror(
                 tracing::debug!("mirror window {id} closed");
                 current_window = None;
             }
+            Some(Event::WindowsChanged { windows }) if use_stream => {
+                let focused_match = windows.iter().find(|w| w.is_focused).map(|w| matches_filter(workspace_filter, app_filter, w, &workspace_map)).unwrap_or(false);
+                update_freeze(&mut child, &mut frozen, !focused_match)?;
+            }
+            Some(Event::WindowOpenedOrChanged { window }) if use_stream && window.is_focused => {
+                let focused_match = matches_filter(workspace_filter, app_filter, &window, &workspace_map);
+                update_freeze(&mut child, &mut frozen, !focused_match)?;
+            }
+            Some(Event::WorkspacesChanged { workspaces }) if use_stream => {
+                for w in &workspaces {
+                    if let Some(name) = &w.name {
+                        workspace_map.insert(w.id, name.clone());
+                    } else {
+                        workspace_map.insert(w.id, w.idx.to_string());
+                    }
+                }
+                if let Ok(windows) = niri.windows() {
+                    let focused_match = windows.iter().find(|w| w.is_focused).map(|w| matches_filter(workspace_filter, app_filter, w, &workspace_map)).unwrap_or(false);
+                    update_freeze(&mut child, &mut frozen, !focused_match)?;
+                }
+            }
             Some(_) => {}
             None => {}
         }
@@ -537,8 +630,12 @@ fn run_mirror(
             Some(status) => {
                 tracing::warn!("wl-mirror died ({status}); restarting");
                 std::thread::sleep(Duration::from_secs(1));
-                child = spawn_mirror(&tool, src, Some(&target))?;
+                child = spawn_mirror(&tool, src, Some(&target), use_stream)?;
                 current_window = None;
+                frozen = false;
+                if use_stream {
+                    send_cmd(&mut child, "unfreeze")?;
+                }
             }
             None => {}
         }
@@ -558,6 +655,7 @@ fn spawn_mirror(
     tool: &std::path::Path,
     src: &str,
     fullscreen_target: Option<&str>,
+    stream: bool,
 ) -> Result<Child> {
     let mut cmd = Command::new(tool);
     // wl-mirror parses `[options] <output>`: options must precede the output
@@ -565,8 +663,11 @@ fn spawn_mirror(
     if let Some(tgt) = fullscreen_target {
         cmd.args(["--fullscreen-output", tgt]);
     }
+    if stream {
+        cmd.arg("--stream");
+    }
     cmd.arg(src);
-    cmd.stdin(Stdio::null())
+    cmd.stdin(if stream { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
