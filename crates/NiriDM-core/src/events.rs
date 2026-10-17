@@ -189,6 +189,9 @@ pub struct Workspace {
     /// Whether this workspace is the single focused one across all outputs.
     #[serde(default)]
     pub is_focused: bool,
+    /// ID of the window currently active on this workspace, if any.
+    #[serde(default)]
+    pub active_window_id: Option<u64>,
 }
 
 /// A live `niri msg --json event-stream` connection.
