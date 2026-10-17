@@ -34,7 +34,7 @@ Implemented:
 - **Settings TUI** — when a monitor is plugged in, `ndm popup` opens a
   full-screen settings screen (`ndm tui`) in a terminal: arrangement
   (extend left/right, mirror, only-this, off), resolution, scale, position,
-  transform, and VRR, with *apply* and *apply & save* — no launcher required.
+  transform, and VRR, with *apply* — no launcher required.
 - **Popup timeout** — the popup dismisses itself after `popup-timeout` seconds
   so an unattended prompt can never block the daemon.
 - **Mirror** — `ndm mirror SRC [DST]` spawns `wl-mirror` and steers its window

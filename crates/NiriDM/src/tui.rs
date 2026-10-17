@@ -23,8 +23,8 @@ use ndm_core::screen::{Field, Screen};
 /// What the user asked for before exiting the TUI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
-    /// Apply the arrangement; `save` also records it as a named layout.
-    Apply { save: bool },
+    /// Apply the arrangement.
+    Apply,
     /// Leave everything as it is.
     Cancel,
 }
@@ -86,8 +86,7 @@ fn event_loop(
 fn handle_key(screen: &mut Screen, code: KeyCode) -> Option<Outcome> {
     match code {
         KeyCode::Char('q') | KeyCode::Esc => Some(Outcome::Cancel),
-        KeyCode::Enter => Some(Outcome::Apply { save: false }),
-        KeyCode::Char('s') => Some(Outcome::Apply { save: true }),
+        KeyCode::Enter => Some(Outcome::Apply),
         KeyCode::Up | KeyCode::Char('k') | KeyCode::Tab => {
             screen.prev_field();
             None
@@ -154,14 +153,7 @@ fn draw_frame(f: &mut ratatui::Frame, screen: &Screen, description: &str) {
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(" apply "),
-            Span::styled(
-                "s",
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" apply & save  "),
+            Span::raw(" apply  "),
             Span::styled("r", Style::default().fg(Color::Yellow)),
             Span::raw(" reset position  "),
             Span::styled("q", Style::default().fg(Color::Red)),
@@ -223,13 +215,6 @@ fn field_row(screen: &Screen, field: Field) -> (String, String) {
             .mirror_app
             .clone()
             .unwrap_or_else(|| "any app".into()),
-        Field::MirrorCursor => {
-            if screen.mirror_cursor {
-                "show".to_string()
-            } else {
-                "hide".to_string()
-            }
-        }
         Field::MirrorScaling => screen.mirror_scaling.label().to_string(),
         Field::Resolution => screen.mode_string().unwrap_or_else(|| "off".into()),
         Field::Scale => format!("{:.2}", screen.scale),

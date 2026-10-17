@@ -97,7 +97,6 @@ pub enum Field {
     MirrorFrom,
     MirrorWorkspace,
     MirrorApp,
-    MirrorCursor,
     MirrorScaling,
     Resolution,
     Scale,
@@ -113,7 +112,6 @@ impl Field {
             Field::MirrorFrom => "Mirror from",
             Field::MirrorWorkspace => "Workspace filter",
             Field::MirrorApp => "App filter",
-            Field::MirrorCursor => "Mirror cursor",
             Field::MirrorScaling => "Mirror scaling",
             Field::Resolution => "Resolution",
             Field::Scale => "Scale",
@@ -178,7 +176,6 @@ pub struct Screen {
     pub mirror_workspaces: Vec<String>,
     /// App IDs offered for the app filter.
     pub mirror_apps: Vec<String>,
-    pub mirror_cursor: bool,
     pub mirror_scaling: MirrorScaleMode,
     /// Index into the target's `modes`.
     pub mode_idx: usize,
@@ -225,7 +222,6 @@ impl Screen {
             mirror_app: None,
             mirror_workspaces: Vec::new(),
             mirror_apps: Vec::new(),
-            mirror_cursor: true,
             mirror_scaling: MirrorScaleMode::Fit,
             mode_idx,
             scale,
@@ -322,7 +318,6 @@ impl Screen {
             fields.push(Field::MirrorFrom);
             fields.push(Field::MirrorWorkspace);
             fields.push(Field::MirrorApp);
-            fields.push(Field::MirrorCursor);
             fields.push(Field::MirrorScaling);
         }
         if self.arrangement != Arrangement::Off {
@@ -426,7 +421,6 @@ impl Screen {
             Field::MirrorApp => {
                 self.mirror_app = cycle_filter(self.mirror_app.clone(), &self.mirror_apps, delta)
             }
-            Field::MirrorCursor => self.mirror_cursor = !self.mirror_cursor,
             Field::MirrorScaling => {
                 let idx = self
                     .mirror_scaling

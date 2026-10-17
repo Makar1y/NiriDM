@@ -834,9 +834,9 @@ fn run_tui(
             eprintln!("popup dismissed");
             Ok(())
         }
-        tui::Outcome::Apply { save } => {
+        tui::Outcome::Apply => {
             let layout = screen.to_layout()?;
-            let do_save = save || prefs.remember_new_monitors;
+            let do_save = prefs.remember_new_monitors;
             if do_save {
                 let mut layouts = load_layouts(&paths.layouts)?;
                 store_auto_layout(&mut layouts, layout.clone());
