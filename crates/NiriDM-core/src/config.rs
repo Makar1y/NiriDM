@@ -2,9 +2,7 @@
 //!
 //! ```kdl
 //! config {
-//!     popup-providers "fuzzel" "wofi" "bemenu" "yad" "zenity" "dmenu"
 //!     popup-timeout 20
-//!     popup-ui "tui"
 //!     popup-terminals "alacritty" "foot" "kitty" "wezterm" "ghostty" "xterm"
 //!     remember-new-monitors true
 //!     poll-interval-ms 1000
@@ -22,24 +20,11 @@ use std::time::Duration;
 use crate::error::{NdError, Result};
 use crate::kdl::{kdl_nodes, Val};
 
-/// How the popup asks the user.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PopupUi {
-    /// Full-screen per-monitor settings ("`ndm tui`") in a terminal.
-    Tui,
-    /// Single-answer launcher menu (`fuzzel`, `wofi`, `zenity`, ...).
-    Menu,
-}
-
 /// Preferences read from `config.kdl`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Prefs {
-    /// Launcher chain, most preferred first.
-    pub popup_providers: Vec<String>,
     /// How long the popup waits for an answer before giving up.
     pub popup_timeout: Duration,
-    /// Whether the popup is the TUI settings screen or a launcher menu.
-    pub popup_ui: PopupUi,
     /// Terminals tried (in order) to host the TUI popup.
     pub popup_terminals: Vec<String>,
     /// Automatically save the arrangement chosen in the popup as a layout,
@@ -56,12 +41,7 @@ pub struct Prefs {
 impl Default for Prefs {
     fn default() -> Self {
         Self {
-            popup_providers: ["fuzzel", "wofi", "bemenu", "yad", "zenity", "dmenu"]
-                .iter()
-                .map(|s| (*s).to_owned())
-                .collect(),
             popup_timeout: Duration::from_secs(20),
-            popup_ui: PopupUi::Tui,
             popup_terminals: ["alacritty", "foot", "kitty", "wezterm", "ghostty", "xterm"]
                 .iter()
                 .map(|s| (*s).to_owned())
@@ -105,18 +85,6 @@ impl Prefs {
             }
             for child in &node.children {
                 match child.name.as_str() {
-                    "popup-providers" => {
-                        prefs.popup_providers = child
-                            .args
-                            .iter()
-                            .map(|v| string_arg("popup-providers", v))
-                            .collect::<Result<Vec<_>>>()?;
-                        if prefs.popup_providers.is_empty() {
-                            return Err(NdError::Other(
-                                "`popup-providers` needs at least one name".into(),
-                            ));
-                        }
-                    }
                     "popup-timeout" => match child.args.as_slice() {
                         [Val::Num(n)] if *n >= 0.0 => {
                             prefs.popup_timeout = Duration::from_secs_f64(*n)
@@ -139,15 +107,6 @@ impl Prefs {
                                 "`remember-new-monitors` needs true or false".into(),
                             ))
                         }
-                    },
-                    "popup-ui" => match child.args.as_slice() {
-                        [Val::Str(s)] if s.eq_ignore_ascii_case("tui") => {
-                            prefs.popup_ui = PopupUi::Tui
-                        }
-                        [Val::Str(s)] if s.eq_ignore_ascii_case("menu") => {
-                            prefs.popup_ui = PopupUi::Menu
-                        }
-                        _ => return Err(NdError::Other("`popup-ui` needs `tui` or `menu`".into())),
                     },
                     "popup-terminals" => {
                         prefs.popup_terminals = child
@@ -207,9 +166,7 @@ mod tests {
     fn missing_key_uses_defaults() {
         let p = Prefs::parse("").unwrap();
         assert_eq!(p, Prefs::default());
-        assert_eq!(p.popup_providers[0], "fuzzel");
         assert_eq!(p.popup_timeout, Duration::from_secs(20));
-        assert_eq!(p.popup_ui, PopupUi::Tui);
         assert_eq!(p.popup_terminals[0], "alacritty");
         assert!(p.remember_new_monitors);
         assert_eq!(p.poll_interval_ms, 1000);
@@ -221,9 +178,7 @@ mod tests {
         let p = Prefs::parse(
             r#"
             config {
-                popup-providers "wofi" "fuzzel"
                 popup-timeout 5
-                popup-ui "menu"
                 popup-terminals "foot" "kitty"
                 remember-new-monitors false
                 poll-interval-ms 250
@@ -233,12 +188,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert_eq!(
-            p.popup_providers,
-            vec!["wofi".to_owned(), "fuzzel".to_owned()]
-        );
         assert_eq!(p.popup_timeout, Duration::from_secs(5));
-        assert_eq!(p.popup_ui, PopupUi::Menu);
         assert_eq!(
             p.popup_terminals,
             vec!["foot".to_owned(), "kitty".to_owned()]
@@ -267,8 +217,6 @@ mod tests {
     fn rejects_malformed_values() {
         assert!(Prefs::parse(r#"config { popup-timeout "soon" }"#).is_err());
         assert!(Prefs::parse(r#"config { remember-new-monitors maybe }"#).is_err());
-        assert!(Prefs::parse(r#"config { popup-providers }"#).is_err());
-        assert!(Prefs::parse(r#"config { popup-ui "web" }"#).is_err());
         assert!(Prefs::parse(r#"config { popup-terminals }"#).is_err());
     }
 

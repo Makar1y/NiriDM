@@ -35,9 +35,8 @@ Implemented:
   full-screen settings screen (`ndm tui`) in a terminal: arrangement
   (extend left/right, mirror, only-this, off), resolution, scale, position,
   transform, and VRR, with *apply* and *apply & save* — no launcher required.
-- **Popup provider chain** — when no terminal is available (or `popup-ui` is
-  `menu`), falls back to `fuzzel → wofi → bemenu → yad → zenity → dmenu`, with a
-  timeout so an unattended prompt can't block the daemon.
+- **Popup timeout** — the popup dismisses itself after `popup-timeout` seconds
+  so an unattended prompt can never block the daemon.
 - **Mirror** — `ndm mirror SRC [DST]` spawns `wl-mirror` and steers its window
   to the target output, fullscreen, via the event stream.
 - **Workspace routing** — `ndm route WS OUT` pins a workspace to an output
@@ -64,7 +63,6 @@ inputs.niridm.url = "github:Makar1y/NiriDM";
     enable = true;
     autoHotplug = true;          # systemd user units NiriDM-init + NiriDM-daemon
     pollInterval = 1000;         # ms
-    popupProvider = [ "fuzzel" ];  # applied once on first bootstrap
     popupTimeout = 15;             # seconds the popup waits; omit to keep default
     mirror.enable = true;        # install wl-mirror for `ndm mirror` (default)
     # mirror.package = pkgs.wl-mirror;  # override the mirror tool
@@ -108,7 +106,7 @@ ndm monitor <output> on|off      # enable/disable an output in the active layout
 ndm mirror <src> [dst]           # mirror src onto dst (dst defaults to focused output)
 ndm route <workspace> [output]   # pin a workspace to an output (no output = unpin)
 ndm switch <workspace> <output>  # move workspace to output transiently
-ndm popup [output] [--provider P] [--timeout S]
+ndm popup [output]  [--timeout S]
 ndm tui [--new OUTPUT] [--report PATH] [--timeout S]
 ndm list                         # saved layouts
 ndm daemon [--poll-ms N] [--settle-ms N] [--once] [--no-popup] [--popup-cmd C]
@@ -125,10 +123,8 @@ config {
     poll-interval-ms 1000       // daemon poll interval
     settle-ms 300               // wait this long after a hotplug before acting
     popup-timeout 30            // seconds before the popup auto-dismisses
-    popup-ui "tui"              // "tui" (settings screen) or "menu" (launcher chain)
     popup-terminals "alacritty" "foot" "kitty" "wezterm" "ghostty" "xterm"
     remember-new-monitors true  // auto-apply without prompting when true
-    popup-providers "fuzzel" "wofi" "bemenu" "yad" "zenity" "dmenu"
     mirror-tool "wl-mirror"
 }
 ```
@@ -152,9 +148,9 @@ rejected by niri is rolled back to the previous content.
   window by PID (fallback: app-id/title match), so it survives races with
   niri's focus. The TUI's *Mirror* arrangement launches `ndm mirror` detached,
   so the mirror keeps running after the settings window closes.
-- **Popup providers** are probed in order; the first executable found is used.
-  With `popup-ui "tui"` (the default) they are only the fallback for when no
-  terminal from `popup-terminals` is installed.
+- **Popup terminals** are probed in order; the first executable found hosts
+  `ndm tui`. With none of them installed the popup is skipped and the daemon
+  logs it (there is no other popup UI).
 - **IPC stability** — niri's JSON event stream has been stable since 24.11;
   unknown event variants are ignored for forward compatibility.
 

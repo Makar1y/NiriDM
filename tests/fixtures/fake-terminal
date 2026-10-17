@@ -1,0 +1,22 @@
+#!/bin/sh
+# Fake terminal used by the smoke tests. Instead of hosting `ndm tui` in a real
+# terminal it records the argv it was called with and writes a canned report
+# next to the `--report <path>` argument, so the popup's hosting/timeout/
+# report contract can be exercised headlessly.
+if [ -n "${FAKE_TERM_LOG:-}" ]; then
+  printf '%s\n' "$@" > "$FAKE_TERM_LOG"
+fi
+if [ -n "${FAKE_TERM_HANG:-}" ]; then
+  sleep 300
+  exit 0
+fi
+prev=
+report=
+for arg in "$@"; do
+  [ "$prev" = "--report" ] && report=$arg
+  prev=$arg
+done
+if [ -n "$report" ]; then
+  printf '%s\n' "${FAKE_TERM_REPORT:-mock-tui-report}" > "$report"
+fi
+exit 0

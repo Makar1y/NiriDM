@@ -50,10 +50,6 @@ units that start with the niri session.
        # Daemon poll interval in milliseconds (default: 1000).
        pollInterval = 1000;
 
-       # Launchers, most preferred first. Applied to a freshly created
-       # ~/.config/NiriDM/config.kdl on first bootstrap (default: []).
-       popupProvider = [ "fuzzel" "wofi" ];
-
        # Seconds the popup waits for a decision (default: unset → config.kdl
        # default of 20). Applied to config.kdl on every login.
        popupTimeout = 15;
@@ -87,7 +83,6 @@ defines that unit (otherwise start it manually — see
     enable = true;
     autoHotplug = true;
     pollInterval = 1000;
-    popupProvider = [ "fuzzel" ];
     popupTimeout = 15;
     mirror.enable = true;
   };
@@ -180,10 +175,9 @@ systemctl --user status NiriDM-daemon
 journalctl --user -u NiriDM-daemon -f
 ```
 
-Plug in a monitor; if no saved layout matches, a settings screen should open in
-a terminal (with `popup-ui "tui"`, the default). If no supported terminal is
-installed it falls back to a launcher menu, or the daemon logs what it would do
-when started with `--no-popup`.
+Plug in a monitor; a settings screen opens in a terminal whenever a monitor is
+newly connected. Install at least one terminal from `popup-terminals`, otherwise
+the popup is skipped (the daemon then only logs), or run with `--no-popup`.
 
 ## Update and uninstall
 
@@ -224,8 +218,7 @@ from the daemon's user service).
 
 ### The popup never appears
 
-- With `popup-ui "tui"`, install a terminal listed in `popup-terminals` (default:
-  `alacritty`, `foot`, `kitty`, `wezterm`, `ghostty`, `xterm`).
-- With `popup-ui "menu"`, install one of the supported launchers, or set
-  `popup-providers` / `programs.NiriDM.popupProvider`.
-- Providers/terminals are probed in order; the first executable found wins.
+- Install a terminal listed in `popup-terminals` (default: `alacritty`, `foot`,
+  `kitty`, `wezterm`, `ghostty`, `xterm`); they are probed in order and the
+  first executable found hosts the settings screen.
+- The popup is the TUI only; there is no launcher menu fallback.

@@ -1,6 +1,23 @@
 #!/bin/sh
-# Fake wl-mirror: echoes its "running" line, stays up a moment, exits cleanly
-# (like the real one when its fullscreen window is closed).
-echo "wl-mirror: mirroring $1"
+# Fake wl-mirror. Parses `[options] <output>` the way the real one does:
+# an option that appears *after* the output name is a trailing argument and
+# makes wl-mirror exit non-zero. Guards the argument order in `ndm mirror`.
+expect=
+output=
+for arg in "$@"; do
+  if [ -n "$expect" ]; then expect=; continue; fi
+  case "$arg" in
+    -*)
+      if [ -n "$output" ]; then
+        echo "error: options::parse(): unexpected trailing arguments after output name" >&2
+        exit 1
+      fi
+      [ "$arg" = "--fullscreen-output" ] && expect=1
+      ;;
+    *) output=$arg ;;
+  esac
+done
+[ -z "$output" ] && { echo "error: no output given" >&2; exit 1; }
+echo "wl-mirror: mirroring $output"
 sleep 3
 exit 0

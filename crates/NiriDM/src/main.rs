@@ -9,9 +9,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
-use ndm_core::action::Action;
 use ndm_core::config::Prefs;
-use ndm_core::launcher::{self, Menu};
+use ndm_core::launcher;
 use ndm_core::layout::capture_layout;
 use ndm_core::paths::NiriDMPaths;
 use ndm_core::popup::PopupContext;
@@ -104,9 +103,6 @@ enum Cmd {
     Popup {
         /// Monitor to configure. Defaults to `$NDM_NEW` when run by the daemon.
         connector: Option<String>,
-        /// Launcher to use instead of the configured chain.
-        #[arg(long, value_name = "NAME_OR_PATH")]
-        provider: Option<String>,
         /// Popup timeout in seconds (overrides `config.kdl`).
         #[arg(long)]
         timeout: Option<u64>,
@@ -311,12 +307,8 @@ fn main() -> Result<()> {
             init_files(&paths)?;
             remind_include(&paths)?;
         }
-        Cmd::Popup {
-            connector,
-            provider,
-            timeout,
-        } => {
-            run_popup(&paths, &niri, connector, provider, timeout)?;
+        Cmd::Popup { connector, timeout } => {
+            run_popup(&paths, &niri, connector, timeout)?;
         }
         Cmd::Tui {
             new,
@@ -568,10 +560,12 @@ fn spawn_mirror(
     fullscreen_target: Option<&str>,
 ) -> Result<Child> {
     let mut cmd = Command::new(tool);
-    cmd.arg(src);
+    // wl-mirror parses `[options] <output>`: options must precede the output
+    // name, otherwise it exits with "unexpected trailing arguments".
     if let Some(tgt) = fullscreen_target {
         cmd.args(["--fullscreen-output", tgt]);
     }
+    cmd.arg(src);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -579,15 +573,15 @@ fn spawn_mirror(
         .with_context(|| format!("failed to start {}", tool.display()))
 }
 
-/// `ndm popup`: pick a quick arrangement for a new monitor and apply it.
+/// `ndm popup`: open the TUI settings screen for a new monitor in a terminal.
 ///
-/// stdout carries exactly one line — the chosen action — because the daemon
-/// parses it. Everything else goes to stderr.
+/// stdout carries the chosen action's report line; everything else goes to
+/// stderr. When none of the configured terminals is on `PATH` the popup is
+/// skipped (there is no menu fallback).
 fn run_popup(
     paths: &NiriDMPaths,
     niri: &Niri,
     connector: Option<String>,
-    provider: Option<String>,
     timeout: Option<u64>,
 ) -> Result<()> {
     let prefs = Prefs::load(&paths.config)?;
@@ -610,80 +604,19 @@ fn run_popup(
         bail!("output `{target}` is not connected");
     }
 
-    // TUI popup: host `ndm tui` in a terminal instead of the launcher menu.
-    if prefs.popup_ui == ndm_core::config::PopupUi::Tui {
-        if let Some(term) =
-            launcher::detect(&prefs.popup_terminals, std::env::var_os("PATH").as_deref())
-        {
-            return run_tui_popup(paths, &target, &prefs, &term);
+    // The popup is always the TUI, hosted in the first configured terminal
+    // that exists. No terminal means no popup.
+    let term = match launcher::detect(&prefs.popup_terminals, std::env::var_os("PATH").as_deref()) {
+        Some(term) => term,
+        None => {
+            eprintln!(
+                "no terminal found for the TUI popup (tried: {}); skipping",
+                prefs.popup_terminals.join(", ")
+            );
+            return Ok(());
         }
-        eprintln!(
-            "no terminal found for the TUI popup (tried: {}); using a launcher menu",
-            prefs.popup_terminals.join(", ")
-        );
-    }
-
-    let layouts = load_layouts(&paths.layouts)?;
-    let ctx = PopupContext {
-        connected: outputs,
-        new,
-        layouts: layouts.iter().map(|l| l.name.clone()).collect(),
     };
-
-    let menu = Menu {
-        prompt: format!("NiriDM · {}", ctx.describe(&target)),
-        items: Action::ALL.iter().map(|a| a.label(&target)).collect(),
-    };
-
-    let bin = match &provider {
-        Some(p) if p.contains('/') => PathBuf::from(p),
-        Some(p) => launcher::detect(std::slice::from_ref(p), std::env::var_os("PATH").as_deref())
-            .with_context(|| format!("launcher `{p}` not found in PATH"))?,
-        None => launcher::detect(&prefs.popup_providers, std::env::var_os("PATH").as_deref())
-            .with_context(|| {
-                format!(
-                    "no popup provider found (tried: {})",
-                    prefs.popup_providers.join(", ")
-                )
-            })?,
-    };
-
-    let limit = timeout
-        .map(Duration::from_secs)
-        .unwrap_or(prefs.popup_timeout);
-    let Some(choice) = launcher::prompt(&bin, &menu, limit).context("running the popup")? else {
-        eprintln!("popup dismissed (or timed out)");
-        return Ok(());
-    };
-    let Some(action) = Action::from_label(&choice) else {
-        bail!("launcher returned unknown choice {choice:?}");
-    };
-
-    let layout = action.synthesize(&ctx)?;
-    eprintln!("{} → {}", ctx.describe(&target), action.label(&target));
-
-    if prefs.remember_new_monitors {
-        let mut layouts = layouts;
-        let name = layout.name.clone();
-        store_auto_layout(&mut layouts, layout.clone());
-        save_layouts(&paths.layouts, &layouts)?;
-        eprintln!("saved layout `{name}`");
-    }
-
-    let written = write_monitors(paths, &ctx.connected, &layout)?;
-    eprintln!(
-        "{}",
-        if written {
-            format!("applied `{}`", layout.name)
-        } else {
-            format!("layout `{}` already applied", layout.name)
-        }
-    );
-    remind_include(paths)?;
-
-    // The daemon reads this line; nothing else may reach stdout.
-    println!("{}", action.label(&target));
-    Ok(())
+    run_tui_popup(paths, &target, &prefs, &term, timeout)
 }
 
 /// `ndm tui`: edit the settings for one monitor in a full-screen TUI, then
@@ -803,7 +736,16 @@ fn start_mirror(src: &str, dst: &str) -> Result<()> {
 
 /// Run `ndm tui` for `target` inside the first available terminal, waiting up
 /// to the popup timeout and reporting the chosen action on stdout.
-fn run_tui_popup(paths: &NiriDMPaths, target: &str, prefs: &Prefs, term: &PathBuf) -> Result<()> {
+fn run_tui_popup(
+    paths: &NiriDMPaths,
+    target: &str,
+    prefs: &Prefs,
+    term: &PathBuf,
+    timeout: Option<u64>,
+) -> Result<()> {
+    let limit = timeout
+        .map(Duration::from_secs)
+        .unwrap_or(prefs.popup_timeout);
     let exe = std::env::current_exe().context("finding the ndm binary")?;
     let report = paths
         .dir
@@ -817,7 +759,7 @@ fn run_tui_popup(paths: &NiriDMPaths, target: &str, prefs: &Prefs, term: &PathBu
         "--report".into(),
         report.clone().into_os_string(),
         "--timeout".into(),
-        OsString::from(prefs.popup_timeout.as_secs().to_string()),
+        OsString::from(limit.as_secs().to_string()),
     ];
     let args = launcher::terminal_args(&term.display().to_string(), &program);
 
@@ -829,9 +771,8 @@ fn run_tui_popup(paths: &NiriDMPaths, target: &str, prefs: &Prefs, term: &PathBu
         .spawn()
         .with_context(|| format!("running terminal {}", term.display()))?;
 
-    // Own the outer deadline like the launcher menu does; the TUI also gets
-    // `--timeout` so it dismisses itself first.
-    let _finished = launcher::wait_or_kill(&mut child, prefs.popup_timeout)?;
+    // Own the outer deadline; the TUI also gets `--timeout` so it dismisses itself first.
+    let _finished = launcher::wait_or_kill(&mut child, limit)?;
 
     let choice = std::fs::read_to_string(&report)
         .ok()
@@ -867,14 +808,7 @@ fn init_files(paths: &NiriDMPaths) -> Result<()> {
     }
     if !paths.config.exists() {
         let template = "\
-// NiriDM preferences. Every key is optional; the values below are the
-// defaults. This file is only created when missing, so edit freely.
 config {
-    // Launchers tried in order when a new monitor needs a decision
-    // (used when popup-ui is \"menu\", or as the fallback).
-    popup-providers \"fuzzel\" \"wofi\" \"bemenu\" \"yad\" \"zenity\" \"dmenu\"
-    // How the popup asks: \"tui\" (full-screen settings) or \"menu\".
-    popup-ui \"tui\"
     // Terminals tried, in order, to host the TUI popup.
     popup-terminals \"alacritty\" \"foot\" \"kitty\" \"wezterm\" \"ghostty\" \"xterm\"
     // Seconds the popup waits before giving up.

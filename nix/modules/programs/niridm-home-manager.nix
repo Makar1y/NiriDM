@@ -20,7 +20,7 @@ let
 
   cfg = config.programs.NiriDM;
 
-  # The daemon shells out to `niri msg` and to the popup launcher / wl-mirror,
+  # The daemon shells out to `niri msg`, the popup host (a terminal) and wl-mirror,
   # but systemd user units get a minimal PATH. Resolve niri from the niri
   # home-manager module (niri-flake exposes `programs.niri.package`) and build a
   # PATH covering the packages plus the usual user/system profiles.
@@ -44,21 +44,13 @@ let
   daemonEnvironment = lib.optional (niriPackage != null)
     "NiriDM_NIRI_BIN=${niriPackage}/bin/niri" ++ [ "PATH=${daemonPath}" ];
 
-  providersLine =
-    builtins.concatStringsSep " " (map (p: "\"${p}\"") cfg.popupProvider);
-
   # First-login bootstrap: `ndm init` writes config.kdl/layouts.kdl/
-  # monitors.kdl (never overwrites). When popupProvider is set we customise
-  # the freshly created config.kdl exactly once; afterwards it is user-owned.
+  # monitors.kdl (never overwrites). We may then patch `popup-timeout` in the
+  # freshly created config.kdl; otherwise that file is user-owned.
   initScript = pkgs.writeShellScript "ndm-init" ''
     set -eu
     HOME_CONFIG="$HOME/.config/NiriDM/config.kdl"
     ${cfg.package}/bin/ndm init >/dev/null
-    ${lib.optionalString (cfg.popupProvider != [ ]) ''
-      if grep -q '^    popup-providers ' "$HOME_CONFIG"; then
-        sed -i 's|^    popup-providers .*|    popup-providers ${providersLine}|' "$HOME_CONFIG"
-      fi
-    ''}
     ${lib.optionalString (cfg.popupTimeout != null) ''
       if grep -q '^    popup-timeout ' "$HOME_CONFIG"; then
         sed -i 's|^    popup-timeout .*|    popup-timeout ${toString cfg.popupTimeout}|' "$HOME_CONFIG"
@@ -87,19 +79,6 @@ in
       type = ints.positive;
       default = 1000;
       description = "Daemon poll interval in milliseconds.";
-    };
-
-    popupProvider = mkOption {
-      type = listOf str;
-      default = [ ];
-      description = ''
-        Launchers, most preferred first, used when a new monitor needs a
-        decision. They are the fallback for the settings popup: with
-        `popup-ui "tui"` (the default) a terminal hosts `ndm tui` first, and
-        the launcher chain is only tried when no configured terminal is found.
-        Applied to `~/.config/NiriDM/config.kdl` only when that file does not
-        exist yet; afterwards it is user-owned.
-      '';
     };
 
     popupTimeout = mkOption {
