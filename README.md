@@ -150,9 +150,12 @@ rejected by niri is rolled back to the previous content.
   so the mirror keeps running after the settings window closes.
 - **Workspace/app mirror filters** — `--workspace W` and/or `--app APP` (also
   the TUI's *Workspace filter* / *App filter* rows) mirror the source output
-  only while a matching window is focused: when focus moves elsewhere,
-  wl-mirror is frozen on the last frame; returning to the workspace/app
-  unfreezes it live. With no filter the mirror is continuous.
+  only while it is showing workspace `W` / a focused window of app `APP`: when
+  the source switches away, wl-mirror is frozen on the last frame; returning
+  unfreezes it live. Matching keys on the source output's *active* workspace
+  (the mirror window itself steals keyboard focus on the target, so the global
+  focused workspace is not the source's). With no filter the mirror is
+  continuous.
 - **Popup terminals** are probed in order; the first executable found hosts
   `ndm tui`. With none of them installed the popup is skipped and the daemon
   logs it (there is no other popup UI).

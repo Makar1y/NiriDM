@@ -183,6 +183,10 @@ pub struct Workspace {
     pub name: Option<String>,
     #[serde(default)]
     pub output: Option<String>,
+    /// Whether this workspace is the one currently visible on its output.
+    #[serde(default)]
+    pub is_active: bool,
+    /// Whether this workspace is the single focused one across all outputs.
     #[serde(default)]
     pub is_focused: bool,
 }

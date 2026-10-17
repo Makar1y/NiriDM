@@ -23,7 +23,7 @@ case "$*" in
   "msg --json workspaces")
     if [ -n "${NDM_MOCK_WS:-}" ] && [ -s "$NDM_MOCK_WS" ]; then
       name=$(cat "$NDM_MOCK_WS")
-      printf '%s\n' "[{\"id\":1,\"idx\":1,\"name\":\"$name\",\"output\":\"eDP-1\",\"is_urgent\":false,\"is_active\":true,\"is_focused\":true,\"active_window_id\":null}]"
+      printf '%s\n' "[{\"id\":1,\"idx\":1,\"name\":\"$name\",\"output\":\"${NDM_MOCK_WS_OUTPUT:-DP-1}\",\"is_urgent\":false,\"is_active\":true,\"is_focused\":${NDM_MOCK_WS_FOCUSED:-true},\"active_window_id\":null}]"
     else
       printf '%s\n' '[]'
     fi ;;

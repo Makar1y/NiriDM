@@ -524,7 +524,14 @@ fn run_mirror(
     // through `WindowFocusChanged` / `WorkspaceActivated`, so we re-evaluate on
     // those (and on the wholesale `*Changed` snapshots) rather than guessing.
     if use_stream {
-        evaluate_filters(niri, &mut child, &mut frozen, workspace_filter, app_filter);
+        evaluate_filters(
+            niri,
+            src,
+            &mut child,
+            &mut frozen,
+            workspace_filter,
+            app_filter,
+        );
     }
 
     loop {
@@ -559,7 +566,14 @@ fn run_mirror(
             | Some(Event::WorkspacesChanged { .. })
                 if use_stream =>
             {
-                evaluate_filters(niri, &mut child, &mut frozen, workspace_filter, app_filter);
+                evaluate_filters(
+                    niri,
+                    src,
+                    &mut child,
+                    &mut frozen,
+                    workspace_filter,
+                    app_filter,
+                );
             }
             Some(_) => {}
             None => {}
@@ -577,7 +591,14 @@ fn run_mirror(
                 current_window = None;
                 frozen = false;
                 if use_stream {
-                    evaluate_filters(niri, &mut child, &mut frozen, workspace_filter, app_filter);
+                    evaluate_filters(
+                        niri,
+                        src,
+                        &mut child,
+                        &mut frozen,
+                        workspace_filter,
+                        app_filter,
+                    );
                 }
             }
             None => {}
@@ -612,25 +633,40 @@ fn set_frozen(child: &mut Child, frozen: &mut bool, should_freeze: bool) {
     *frozen = should_freeze;
 }
 
-/// Whether the focused workspace/app currently satisfies the filters. Querying
+/// Whether the source output currently satisfies the filters. wl-mirror shows
+/// exactly one workspace: the one *active* on `src` (niri reports `is_active`
+/// per output; `is_focused` is the single focused workspace across all
+/// outputs, which the mirror window itself steals on the target). Querying
 /// fresh state (instead of trusting an event payload) keeps this correct even
 /// when several changes race.
-fn filters_match(niri: &Niri, workspace_filter: Option<&str>, app_filter: Option<&str>) -> bool {
+fn filters_match(
+    niri: &Niri,
+    src: &str,
+    workspace_filter: Option<&str>,
+    app_filter: Option<&str>,
+) -> bool {
+    let workspaces = niri.workspaces().unwrap_or_default();
+    let active = workspaces
+        .iter()
+        .find(|w| w.is_active && w.output.as_deref() == Some(src));
+
     if let Some(wf) = workspace_filter {
-        let name = niri
-            .workspaces()
-            .ok()
-            .and_then(|ws| ws.into_iter().find(|w| w.is_focused))
-            .map(|w| w.name.unwrap_or_else(|| w.idx.to_string()));
+        let name = active.map(|w| w.name.clone().unwrap_or_else(|| w.idx.to_string()));
         if !name.is_some_and(|n| n.eq_ignore_ascii_case(wf)) {
             return false;
         }
     }
     if let Some(af) = app_filter {
+        let Some(active_id) = active.map(|w| w.id) else {
+            return false;
+        };
         let app = niri
             .windows()
             .ok()
-            .and_then(|ws| ws.into_iter().find(|w| w.is_focused))
+            .and_then(|ws| {
+                ws.into_iter()
+                    .find(|w| w.is_focused && w.workspace_id == Some(active_id))
+            })
             .and_then(|w| w.app_id);
         if !app.is_some_and(|a| a.eq_ignore_ascii_case(af)) {
             return false;
@@ -642,12 +678,13 @@ fn filters_match(niri: &Niri, workspace_filter: Option<&str>, app_filter: Option
 /// Re-evaluate the filters and freeze/unfreeze the mirror to match.
 fn evaluate_filters(
     niri: &Niri,
+    src: &str,
     child: &mut Child,
     frozen: &mut bool,
     workspace_filter: Option<&str>,
     app_filter: Option<&str>,
 ) {
-    let matched = filters_match(niri, workspace_filter, app_filter);
+    let matched = filters_match(niri, src, workspace_filter, app_filter);
     set_frozen(child, frozen, !matched);
 }
 
