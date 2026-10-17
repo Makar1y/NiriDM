@@ -330,7 +330,15 @@ fn main() -> Result<()> {
             workspace,
             app,
         } => {
-            run_mirror(&paths, &niri, &src, dst.as_deref(), wl_mirror.as_deref(), workspace.as_deref(), app.as_deref())?;
+            run_mirror(
+                &paths,
+                &niri,
+                &src,
+                dst.as_deref(),
+                wl_mirror.as_deref(),
+                workspace.as_deref(),
+                app.as_deref(),
+            )?;
         }
         Cmd::Route { workspace, output } => {
             run_route(&paths, &niri, &workspace, output.as_deref())?;
@@ -512,7 +520,8 @@ fn run_mirror(
     let mut frozen = false;
 
     // Build workspace map
-    let mut workspace_map: std::collections::HashMap<u64, String> = std::collections::HashMap::new();
+    let mut workspace_map: std::collections::HashMap<u64, String> =
+        std::collections::HashMap::new();
     if use_stream {
         if let Ok(ws) = niri.workspaces() {
             for w in ws {
@@ -533,11 +542,7 @@ fn run_mirror(
         Ok(())
     }
 
-    fn update_freeze(
-        child: &mut Child,
-        frozen: &mut bool,
-        should_freeze: bool,
-    ) -> Result<()> {
+    fn update_freeze(child: &mut Child, frozen: &mut bool, should_freeze: bool) -> Result<()> {
         if should_freeze && !*frozen {
             send_cmd(child, "freeze")?;
             *frozen = true;
@@ -598,11 +603,16 @@ fn run_mirror(
                 current_window = None;
             }
             Some(Event::WindowsChanged { windows }) if use_stream => {
-                let focused_match = windows.iter().find(|w| w.is_focused).map(|w| matches_filter(workspace_filter, app_filter, w, &workspace_map)).unwrap_or(false);
+                let focused_match = windows
+                    .iter()
+                    .find(|w| w.is_focused)
+                    .map(|w| matches_filter(workspace_filter, app_filter, w, &workspace_map))
+                    .unwrap_or(false);
                 update_freeze(&mut child, &mut frozen, !focused_match)?;
             }
             Some(Event::WindowOpenedOrChanged { window }) if use_stream && window.is_focused => {
-                let focused_match = matches_filter(workspace_filter, app_filter, &window, &workspace_map);
+                let focused_match =
+                    matches_filter(workspace_filter, app_filter, &window, &workspace_map);
                 update_freeze(&mut child, &mut frozen, !focused_match)?;
             }
             Some(Event::WorkspacesChanged { workspaces }) if use_stream => {
@@ -614,7 +624,11 @@ fn run_mirror(
                     }
                 }
                 if let Ok(windows) = niri.windows() {
-                    let focused_match = windows.iter().find(|w| w.is_focused).map(|w| matches_filter(workspace_filter, app_filter, w, &workspace_map)).unwrap_or(false);
+                    let focused_match = windows
+                        .iter()
+                        .find(|w| w.is_focused)
+                        .map(|w| matches_filter(workspace_filter, app_filter, w, &workspace_map))
+                        .unwrap_or(false);
                     update_freeze(&mut child, &mut frozen, !focused_match)?;
                 }
             }
@@ -667,11 +681,15 @@ fn spawn_mirror(
         cmd.arg("--stream");
     }
     cmd.arg(src);
-    cmd.stdin(if stream { Stdio::piped() } else { Stdio::null() })
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .with_context(|| format!("failed to start {}", tool.display()))
+    cmd.stdin(if stream {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    })
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .spawn()
+    .with_context(|| format!("failed to start {}", tool.display()))
 }
 
 /// `ndm popup`: open the TUI settings screen for a new monitor in a terminal.
@@ -751,6 +769,21 @@ fn run_tui(
 
     let layouts = load_layouts(&paths.layouts)?;
     let mut screen = Screen::new_preselecting(outputs.clone(), &target, &layouts)?;
+    // Offer the current workspaces and running apps as mirror filters.
+    let mut workspaces: Vec<String> = niri
+        .workspaces()
+        .map(|all| all.into_iter().filter_map(|w| w.name).collect())
+        .unwrap_or_default();
+    workspaces.sort();
+    workspaces.dedup();
+    let mut apps: Vec<String> = niri
+        .windows()
+        .map(|all| all.into_iter().filter_map(|w| w.app_id).collect())
+        .unwrap_or_default();
+    apps.sort();
+    apps.dedup();
+    screen.mirror_workspaces = workspaces;
+    screen.mirror_apps = apps;
     let ctx = PopupContext {
         connected: outputs,
         new: vec![target.clone()],
@@ -792,7 +825,12 @@ fn run_tui(
 
             if screen.arrangement == Arrangement::Mirror {
                 if let Some(src) = screen.mirror_from.clone() {
-                    start_mirror(&src, &screen.target)?;
+                    start_mirror(
+                        &src,
+                        &screen.target,
+                        screen.mirror_workspace.as_deref(),
+                        screen.mirror_app.as_deref(),
+                    )?;
                 }
             }
 
@@ -808,14 +846,20 @@ fn run_tui(
 
 /// Launch `ndm mirror <src> <dst>` detached, so the mirror keeps running after
 /// the TUI (and its terminal) are gone.
-fn start_mirror(src: &str, dst: &str) -> Result<()> {
+fn start_mirror(src: &str, dst: &str, workspace: Option<&str>, app: Option<&str>) -> Result<()> {
     #[cfg(unix)]
     use std::os::unix::process::CommandExt;
 
     let exe = std::env::current_exe().context("finding the ndm binary")?;
     let mut cmd = Command::new(&exe);
-    cmd.args(["mirror", src, dst])
-        .stdin(Stdio::null())
+    cmd.args(["mirror", src, dst]);
+    if let Some(w) = workspace {
+        cmd.args(["--workspace", w]);
+    }
+    if let Some(a) = app {
+        cmd.args(["--app", a]);
+    }
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     // Detach into a session of its own so closing this terminal cannot SIGHUP

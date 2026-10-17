@@ -215,6 +215,14 @@ fn field_row(screen: &Screen, field: Field) -> (String, String) {
             .mirror_from
             .clone()
             .unwrap_or_else(|| "— no source —".into()),
+        Field::MirrorWorkspace => screen
+            .mirror_workspace
+            .clone()
+            .unwrap_or_else(|| "any workspace".into()),
+        Field::MirrorApp => screen
+            .mirror_app
+            .clone()
+            .unwrap_or_else(|| "any app".into()),
         Field::MirrorCursor => {
             if screen.mirror_cursor {
                 "show".to_string()

@@ -103,7 +103,7 @@ ndm init                         # create config.kdl/layouts.kdl/monitors.kdl if
 ndm capture <name>               # save current arrangement as a layout
 ndm apply <name|auto>            # apply a layout (auto = match connected set)
 ndm monitor <output> on|off      # enable/disable an output in the active layout
-ndm mirror <src> [dst]           # mirror src onto dst (dst defaults to focused output)
+ndm mirror <src> [dst] [--workspace W] [--app APP]  # mirror src onto dst (filters freeze when unfocused)
 ndm route <workspace> [output]   # pin a workspace to an output (no output = unpin)
 ndm switch <workspace> <output>  # move workspace to output transiently
 ndm popup [output]  [--timeout S]
@@ -148,6 +148,11 @@ rejected by niri is rolled back to the previous content.
   window by PID (fallback: app-id/title match), so it survives races with
   niri's focus. The TUI's *Mirror* arrangement launches `ndm mirror` detached,
   so the mirror keeps running after the settings window closes.
+- **Workspace/app mirror filters** — `--workspace W` and/or `--app APP` (also
+  the TUI's *Workspace filter* / *App filter* rows) mirror the source output
+  only while a matching window is focused: when focus moves elsewhere,
+  wl-mirror is frozen on the last frame; returning to the workspace/app
+  unfreezes it live. With no filter the mirror is continuous.
 - **Popup terminals** are probed in order; the first executable found hosts
   `ndm tui`. With none of them installed the popup is skipped and the daemon
   logs it (there is no other popup UI).

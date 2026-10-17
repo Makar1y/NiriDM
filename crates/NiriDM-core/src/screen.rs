@@ -95,6 +95,8 @@ impl MirrorScaleMode {
 pub enum Field {
     Arrangement,
     MirrorFrom,
+    MirrorWorkspace,
+    MirrorApp,
     MirrorCursor,
     MirrorScaling,
     Resolution,
@@ -109,6 +111,8 @@ impl Field {
         match self {
             Field::Arrangement => "Arrangement",
             Field::MirrorFrom => "Mirror from",
+            Field::MirrorWorkspace => "Workspace filter",
+            Field::MirrorApp => "App filter",
             Field::MirrorCursor => "Mirror cursor",
             Field::MirrorScaling => "Mirror scaling",
             Field::Resolution => "Resolution",
@@ -135,6 +139,29 @@ const TRANSFORMS: [Transform; 8] = [
     Transform::Flipped270,
 ];
 
+/// Cycle a tri-state filter value: `None` (off) and the candidate list, moving
+/// by `delta`. Empty candidate list keeps the filter off.
+fn cycle_filter(current: Option<String>, candidates: &[String], delta: i32) -> Option<String> {
+    if candidates.is_empty() {
+        return None;
+    }
+    let n = candidates.len() as i32 + 1; // +1 slot for "off"
+    let cur = match current {
+        None => 0,
+        Some(v) => candidates
+            .iter()
+            .position(|c| *c == v)
+            .map(|i| i as i32 + 1)
+            .unwrap_or(0),
+    };
+    let next = (cur + delta).rem_euclid(n);
+    if next == 0 {
+        None
+    } else {
+        Some(candidates[(next - 1) as usize].clone())
+    }
+}
+
 /// Editable state for the monitor `target` within the connected `outputs`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Screen {
@@ -143,6 +170,14 @@ pub struct Screen {
     pub arrangement: Arrangement,
     /// Source connector when `arrangement == Mirror`.
     pub mirror_from: Option<String>,
+    /// Only mirror while this workspace is focused (`None` = mirror always).
+    pub mirror_workspace: Option<String>,
+    /// Only mirror while an app with this ID is focused (`None` = always).
+    pub mirror_app: Option<String>,
+    /// Workspace names offered for the workspace filter.
+    pub mirror_workspaces: Vec<String>,
+    /// App IDs offered for the app filter.
+    pub mirror_apps: Vec<String>,
     pub mirror_cursor: bool,
     pub mirror_scaling: MirrorScaleMode,
     /// Index into the target's `modes`.
@@ -186,6 +221,10 @@ impl Screen {
             target,
             arrangement: Arrangement::ExtendRight,
             mirror_from,
+            mirror_workspace: None,
+            mirror_app: None,
+            mirror_workspaces: Vec::new(),
+            mirror_apps: Vec::new(),
             mirror_cursor: true,
             mirror_scaling: MirrorScaleMode::Fit,
             mode_idx,
@@ -281,6 +320,8 @@ impl Screen {
         let mut fields = vec![Field::Arrangement];
         if self.arrangement == Arrangement::Mirror {
             fields.push(Field::MirrorFrom);
+            fields.push(Field::MirrorWorkspace);
+            fields.push(Field::MirrorApp);
             fields.push(Field::MirrorCursor);
             fields.push(Field::MirrorScaling);
         }
@@ -375,6 +416,16 @@ impl Screen {
                 self.transform = TRANSFORMS[(cur + delta).rem_euclid(n) as usize];
             }
             Field::Vrr => self.vrr = !self.vrr,
+            Field::MirrorWorkspace => {
+                self.mirror_workspace = cycle_filter(
+                    self.mirror_workspace.clone(),
+                    &self.mirror_workspaces,
+                    delta,
+                )
+            }
+            Field::MirrorApp => {
+                self.mirror_app = cycle_filter(self.mirror_app.clone(), &self.mirror_apps, delta)
+            }
             Field::MirrorCursor => self.mirror_cursor = !self.mirror_cursor,
             Field::MirrorScaling => {
                 let idx = self
@@ -640,6 +691,30 @@ mod tests {
         assert!(!s.fields().contains(&Field::MirrorFrom));
         s.arrangement = Arrangement::Mirror;
         assert!(s.fields().contains(&Field::MirrorFrom));
+    }
+
+    #[test]
+    fn mirror_filters_cycle_from_off_through_candidates() {
+        let candidates = vec!["1".to_owned(), "2".to_owned()];
+        // off -> 1 -> 2 -> off, and back.
+        assert_eq!(cycle_filter(None, &candidates, 1).as_deref(), Some("1"));
+        assert_eq!(
+            cycle_filter(Some("1".into()), &candidates, 1).as_deref(),
+            Some("2")
+        );
+        assert_eq!(cycle_filter(Some("2".into()), &candidates, 1), None);
+        assert_eq!(cycle_filter(None, &candidates, -1).as_deref(), Some("2"));
+        // No candidates keeps the filter off.
+        assert_eq!(cycle_filter(Some("x".into()), &[], 1), None);
+    }
+
+    #[test]
+    fn mirror_filter_fields_appear_only_for_mirror() {
+        let mut s = screen();
+        assert!(!s.fields().contains(&Field::MirrorWorkspace));
+        s.arrangement = Arrangement::Mirror;
+        assert!(s.fields().contains(&Field::MirrorWorkspace));
+        assert!(s.fields().contains(&Field::MirrorApp));
     }
 
     #[test]
