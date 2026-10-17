@@ -65,6 +65,7 @@ inputs.niridm.url = "github:Makar1y/NiriDM";
     autoHotplug = true;          # systemd user units NiriDM-init + NiriDM-daemon
     pollInterval = 1000;         # ms
     popupProvider = [ "fuzzel" ];  # applied once on first bootstrap
+    popupTimeout = 15;             # seconds the popup waits; omit to keep default
     mirror.enable = true;        # install wl-mirror for `ndm mirror` (default)
     # mirror.package = pkgs.wl-mirror;  # override the mirror tool
   };

@@ -54,6 +54,10 @@ units that start with the niri session.
        # ~/.config/NiriDM/config.kdl on first bootstrap (default: []).
        popupProvider = [ "fuzzel" "wofi" ];
 
+       # Seconds the popup waits for a decision (default: unset → config.kdl
+       # default of 20). Applied to config.kdl on every login.
+       popupTimeout = 15;
+
        # Install wl-mirror for `ndm mirror` (default: true).
        mirror.enable = true;
        # mirror.package = pkgs.wl-mirror;   # override
@@ -84,6 +88,7 @@ defines that unit (otherwise start it manually — see
     autoHotplug = true;
     pollInterval = 1000;
     popupProvider = [ "fuzzel" ];
+    popupTimeout = 15;
     mirror.enable = true;
   };
 }

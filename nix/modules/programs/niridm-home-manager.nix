@@ -16,7 +16,7 @@
 
 let
   inherit (lib) mkIf mkEnableOption mkOption;
-  inherit (lib.types) bool ints package listOf str;
+  inherit (lib.types) bool ints package listOf nullOr str;
 
   cfg = config.programs.NiriDM;
 
@@ -59,6 +59,11 @@ let
         sed -i 's|^    popup-providers .*|    popup-providers ${providersLine}|' "$HOME_CONFIG"
       fi
     ''}
+    ${lib.optionalString (cfg.popupTimeout != null) ''
+      if grep -q '^    popup-timeout ' "$HOME_CONFIG"; then
+        sed -i 's|^    popup-timeout .*|    popup-timeout ${toString cfg.popupTimeout}|' "$HOME_CONFIG"
+      fi
+    ''}
   '';
 in
 {
@@ -94,6 +99,18 @@ in
         the launcher chain is only tried when no configured terminal is found.
         Applied to `~/.config/NiriDM/config.kdl` only when that file does not
         exist yet; afterwards it is user-owned.
+      '';
+    };
+
+    popupTimeout = mkOption {
+      type = nullOr ints.positive;
+      default = null;
+      example = 15;
+      description = ''
+        Seconds the popup waits for a decision before dismissing itself.
+        Left unset, `ndm init`'s default (20) applies. Applied to
+        `~/.config/NiriDM/config.kdl` on every login; afterwards the file is
+        otherwise user-owned.
       '';
     };
 
