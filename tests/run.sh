@@ -12,7 +12,7 @@ echo "== cargo build =="
 cargo build --workspace --manifest-path "$R/Cargo.toml"
 
 fail=0
-for t in m3 m4 m4b m4c; do
+for t in m3 m4 m4b m4c m4d; do
   echo
   echo "########## smoke: $t ##########"
   if bash "$R/tests/smoke/$t.sh"; then

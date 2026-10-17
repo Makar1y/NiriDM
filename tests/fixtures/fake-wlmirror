@@ -2,8 +2,12 @@
 # Fake wl-mirror. Parses `[options] <output>` the way the real one does:
 # an option that appears *after* the output name is a trailing argument and
 # makes wl-mirror exit non-zero. Guards the argument order in `ndm mirror`.
+#
+# With `--stream`, wl-mirror reads additional option lines from stdin; the
+# fake logs each line to $NDM_FAKE_MIRROR_LOG and stays up until killed.
 expect=
 output=
+stream=0
 for arg in "$@"; do
   if [ -n "$expect" ]; then expect=; continue; fi
   case "$arg" in
@@ -13,11 +17,18 @@ for arg in "$@"; do
         exit 1
       fi
       [ "$arg" = "--fullscreen-output" ] && expect=1
+      [ "$arg" = "--stream" ] && stream=1
       ;;
     *) output=$arg ;;
   esac
 done
 [ -z "$output" ] && { echo "error: no output given" >&2; exit 1; }
 echo "wl-mirror: mirroring $output"
+if [ "$stream" = 1 ]; then
+  while IFS= read -r line; do
+    printf '%s\n' "$line" >> "${NDM_FAKE_MIRROR_LOG:-/dev/null}"
+  done
+  exit 0
+fi
 sleep 3
 exit 0

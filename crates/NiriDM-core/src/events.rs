@@ -37,6 +37,15 @@ pub enum Event {
     WindowClosed {
         id: u64,
     },
+    /// Focus moved to another window (`id` is `None` when focus was cleared).
+    WindowFocusChanged {
+        id: Option<u64>,
+    },
+    /// A workspace became active; `focused` distinguishes the focused output's
+    /// workspace from ones that merely became visible.
+    WorkspaceActivated {
+        focused: bool,
+    },
     WorkspacesChanged {
         workspaces: Vec<Workspace>,
     },
@@ -60,6 +69,10 @@ struct RawEvent {
     window_opened_or_changed: Option<WindowOpenedOrChangedBody>,
     #[serde(rename = "WindowClosed")]
     window_closed: Option<WindowClosedBody>,
+    #[serde(rename = "WindowFocusChanged")]
+    window_focus_changed: Option<WindowFocusChangedBody>,
+    #[serde(rename = "WorkspaceActivated")]
+    workspace_activated: Option<WorkspaceActivatedBody>,
     #[serde(rename = "WorkspacesChanged")]
     workspaces_changed: Option<WorkspacesChangedBody>,
 }
@@ -81,6 +94,16 @@ struct WindowClosedBody {
     id: u64,
 }
 #[derive(Deserialize)]
+struct WindowFocusChangedBody {
+    #[serde(default)]
+    id: Option<u64>,
+}
+#[derive(Deserialize)]
+struct WorkspaceActivatedBody {
+    #[serde(default)]
+    focused: bool,
+}
+#[derive(Deserialize)]
 struct WorkspacesChangedBody {
     workspaces: Vec<Workspace>,
 }
@@ -95,6 +118,10 @@ impl From<RawEvent> for Event {
             Event::WindowOpenedOrChanged { window: b.window }
         } else if let Some(b) = raw.window_closed {
             Event::WindowClosed { id: b.id }
+        } else if let Some(b) = raw.window_focus_changed {
+            Event::WindowFocusChanged { id: b.id }
+        } else if let Some(b) = raw.workspace_activated {
+            Event::WorkspaceActivated { focused: b.focused }
         } else if let Some(b) = raw.workspaces_changed {
             Event::WorkspacesChanged {
                 workspaces: b.workspaces,

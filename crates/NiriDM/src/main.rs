@@ -519,61 +519,12 @@ fn run_mirror(
     let mut current_window: Option<u64> = None;
     let mut frozen = false;
 
-    // Build workspace map
-    let mut workspace_map: std::collections::HashMap<u64, String> =
-        std::collections::HashMap::new();
+    // Freeze the mirror whenever the focused workspace/app does not match the
+    // filter, and unfreeze it when focus returns. The compositor reports focus
+    // through `WindowFocusChanged` / `WorkspaceActivated`, so we re-evaluate on
+    // those (and on the wholesale `*Changed` snapshots) rather than guessing.
     if use_stream {
-        if let Ok(ws) = niri.workspaces() {
-            for w in ws {
-                if let Some(name) = &w.name {
-                    workspace_map.insert(w.id, name.clone());
-                } else {
-                    workspace_map.insert(w.id, w.idx.to_string());
-                }
-            }
-        }
-    }
-
-    fn send_cmd(child: &mut Child, cmd: &str) -> Result<()> {
-        if let Some(stdin) = child.stdin.as_mut() {
-            use std::io::Write;
-            let _ = writeln!(stdin, "{}", cmd);
-        }
-        Ok(())
-    }
-
-    fn update_freeze(child: &mut Child, frozen: &mut bool, should_freeze: bool) -> Result<()> {
-        if should_freeze && !*frozen {
-            send_cmd(child, "freeze")?;
-            *frozen = true;
-        } else if !should_freeze && *frozen {
-            send_cmd(child, "unfreeze")?;
-            *frozen = false;
-        }
-        Ok(())
-    }
-
-    fn matches_filter(
-        workspace_filter: Option<&str>,
-        app_filter: Option<&str>,
-        window: &ndm_core::events::Window,
-        workspace_map: &std::collections::HashMap<u64, String>,
-    ) -> bool {
-        let mut ok = true;
-        if let Some(wf) = workspace_filter {
-            let wname = window
-                .workspace_id
-                .as_ref()
-                .and_then(|id| workspace_map.get(id))
-                .map(|s| s.as_str())
-                .unwrap_or("");
-            ok = ok && wname.eq_ignore_ascii_case(wf);
-        }
-        if let Some(af) = app_filter {
-            let app = window.app_id.as_deref().unwrap_or("");
-            ok = ok && app.eq_ignore_ascii_case(af);
-        }
-        ok
+        evaluate_filters(niri, &mut child, &mut frozen, workspace_filter, app_filter);
     }
 
     loop {
@@ -602,35 +553,13 @@ fn run_mirror(
                 tracing::debug!("mirror window {id} closed");
                 current_window = None;
             }
-            Some(Event::WindowsChanged { windows }) if use_stream => {
-                let focused_match = windows
-                    .iter()
-                    .find(|w| w.is_focused)
-                    .map(|w| matches_filter(workspace_filter, app_filter, w, &workspace_map))
-                    .unwrap_or(false);
-                update_freeze(&mut child, &mut frozen, !focused_match)?;
-            }
-            Some(Event::WindowOpenedOrChanged { window }) if use_stream && window.is_focused => {
-                let focused_match =
-                    matches_filter(workspace_filter, app_filter, &window, &workspace_map);
-                update_freeze(&mut child, &mut frozen, !focused_match)?;
-            }
-            Some(Event::WorkspacesChanged { workspaces }) if use_stream => {
-                for w in &workspaces {
-                    if let Some(name) = &w.name {
-                        workspace_map.insert(w.id, name.clone());
-                    } else {
-                        workspace_map.insert(w.id, w.idx.to_string());
-                    }
-                }
-                if let Ok(windows) = niri.windows() {
-                    let focused_match = windows
-                        .iter()
-                        .find(|w| w.is_focused)
-                        .map(|w| matches_filter(workspace_filter, app_filter, w, &workspace_map))
-                        .unwrap_or(false);
-                    update_freeze(&mut child, &mut frozen, !focused_match)?;
-                }
+            Some(Event::WindowFocusChanged { .. })
+            | Some(Event::WorkspaceActivated { .. })
+            | Some(Event::WindowsChanged { .. })
+            | Some(Event::WorkspacesChanged { .. })
+                if use_stream =>
+            {
+                evaluate_filters(niri, &mut child, &mut frozen, workspace_filter, app_filter);
             }
             Some(_) => {}
             None => {}
@@ -648,12 +577,78 @@ fn run_mirror(
                 current_window = None;
                 frozen = false;
                 if use_stream {
-                    send_cmd(&mut child, "unfreeze")?;
+                    evaluate_filters(niri, &mut child, &mut frozen, workspace_filter, app_filter);
                 }
             }
             None => {}
         }
     }
+}
+
+/// Write a single stream-mode command to wl-mirror's stdin.
+fn send_mirror_cmd(child: &mut Child, cmd: &str) {
+    if let Some(stdin) = child.stdin.as_mut() {
+        use std::io::Write;
+        let _ = writeln!(stdin, "{cmd}");
+        let _ = stdin.flush();
+    }
+}
+
+/// Freeze or unfreeze `child` so `frozen` reflects `should_freeze`.
+fn set_frozen(child: &mut Child, frozen: &mut bool, should_freeze: bool) {
+    if should_freeze == *frozen {
+        return;
+    }
+    // In stream mode each line is parsed as command-line options, so the
+    // leading dashes matter: a bare `freeze` is treated as an output name.
+    send_mirror_cmd(
+        child,
+        if should_freeze {
+            "--freeze"
+        } else {
+            "--unfreeze"
+        },
+    );
+    *frozen = should_freeze;
+}
+
+/// Whether the focused workspace/app currently satisfies the filters. Querying
+/// fresh state (instead of trusting an event payload) keeps this correct even
+/// when several changes race.
+fn filters_match(niri: &Niri, workspace_filter: Option<&str>, app_filter: Option<&str>) -> bool {
+    if let Some(wf) = workspace_filter {
+        let name = niri
+            .workspaces()
+            .ok()
+            .and_then(|ws| ws.into_iter().find(|w| w.is_focused))
+            .map(|w| w.name.unwrap_or_else(|| w.idx.to_string()));
+        if !name.is_some_and(|n| n.eq_ignore_ascii_case(wf)) {
+            return false;
+        }
+    }
+    if let Some(af) = app_filter {
+        let app = niri
+            .windows()
+            .ok()
+            .and_then(|ws| ws.into_iter().find(|w| w.is_focused))
+            .and_then(|w| w.app_id);
+        if !app.is_some_and(|a| a.eq_ignore_ascii_case(af)) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Re-evaluate the filters and freeze/unfreeze the mirror to match.
+fn evaluate_filters(
+    niri: &Niri,
+    child: &mut Child,
+    frozen: &mut bool,
+    workspace_filter: Option<&str>,
+    app_filter: Option<&str>,
+) {
+    let matched = filters_match(niri, workspace_filter, app_filter);
+    set_frozen(child, frozen, !matched);
 }
 
 /// Move the given window onto `target` and fullscreen it.
