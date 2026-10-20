@@ -38,7 +38,7 @@
         niridm = { config, lib, pkgs, ... }:
           import ./nix/modules/programs/niridm.nix {
             inherit config lib pkgs;
-            ndmPackage = ndmPackage pkgs.system;
+            ndmPackage = ndmPackage pkgs.stdenv.hostPlatform.system; # [ ]: Need change to pkgs.stdenv.hostPlatform.system due to deprication?
           };
         default = self.nixosModules.niridm;
       };
@@ -48,7 +48,7 @@
         niridm = { config, lib, pkgs, ... }:
           import ./nix/modules/programs/niridm-home-manager.nix {
             inherit config lib pkgs;
-            ndmPackage = ndmPackage pkgs.system;
+            ndmPackage = ndmPackage pkgs.stdenv.hostPlatform.system; # [ ]: Need change to pkgs.stdenv.hostPlatform.system due to deprication?
           };
         default = self.homeManagerModules.niridm;
       };
