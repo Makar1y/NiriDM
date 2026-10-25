@@ -44,6 +44,7 @@ pub enum Event {
     /// A workspace became active; `focused` distinguishes the focused output's
     /// workspace from ones that merely became visible.
     WorkspaceActivated {
+        id: u64,
         focused: bool,
     },
     WorkspacesChanged {
@@ -101,6 +102,8 @@ struct WindowFocusChangedBody {
 #[derive(Deserialize)]
 struct WorkspaceActivatedBody {
     #[serde(default)]
+    id: u64,
+    #[serde(default)]
     focused: bool,
 }
 #[derive(Deserialize)]
@@ -121,7 +124,10 @@ impl From<RawEvent> for Event {
         } else if let Some(b) = raw.window_focus_changed {
             Event::WindowFocusChanged { id: b.id }
         } else if let Some(b) = raw.workspace_activated {
-            Event::WorkspaceActivated { focused: b.focused }
+            Event::WorkspaceActivated {
+                id: b.id,
+                focused: b.focused,
+            }
         } else if let Some(b) = raw.workspaces_changed {
             Event::WorkspacesChanged {
                 workspaces: b.workspaces,
@@ -336,6 +342,16 @@ mod tests {
                 assert_eq!(window.id, 7);
                 assert_eq!(window.pid, Some(1234));
                 assert_eq!(window.app_id.as_deref(), Some("wl-mirror"));
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+
+        let line = r#"{"WorkspaceActivated":{"id":3,"focused":true}}"#;
+        let e: Event = serde_json::from_str(line).unwrap();
+        match e {
+            Event::WorkspaceActivated { id, focused } => {
+                assert_eq!(id, 3);
+                assert!(focused);
             }
             other => panic!("wrong variant: {other:?}"),
         }

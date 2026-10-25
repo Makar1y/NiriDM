@@ -475,9 +475,21 @@ fn outputs_exist(niri: &Niri, names: &[&str]) -> Result<()> {
     Ok(())
 }
 
+/// Check whether a binary is available on PATH (used to detect bar/notification daemons).
+fn command_exists(name: &str) -> bool {
+    Command::new("sh")
+        .args(["-c", &format!("command -v {name}")])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Check whether any process whose cmdline contains `name` is running.
 fn is_process_running(name: &str) -> bool {
     Command::new("pgrep")
-        .arg("-x")
+        .arg("-f")
         .arg(name)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -501,7 +513,9 @@ fn hide_bar_cmd(prefs: &Prefs) -> bool {
     if let Some(cmd) = &prefs.mirror_hide_bar_cmd {
         return run_shell_cmd(cmd);
     }
-    if is_process_running("quickshell") || is_process_running("noctalia-shell") {
+    if (is_process_running("quickshell") || is_process_running("noctalia-shell"))
+        && command_exists("noctalia-shell")
+    {
         return run_shell_cmd("noctalia-shell ipc call bar hideBar");
     }
     if is_process_running("waybar") {
@@ -515,7 +529,9 @@ fn show_bar_cmd(prefs: &Prefs) {
         run_shell_cmd(cmd);
         return;
     }
-    if is_process_running("quickshell") || is_process_running("noctalia-shell") {
+    if (is_process_running("quickshell") || is_process_running("noctalia-shell"))
+        && command_exists("noctalia-shell")
+    {
         run_shell_cmd("noctalia-shell ipc call bar showBar");
         return;
     }
@@ -528,7 +544,9 @@ fn hide_notification_cmd(prefs: &Prefs) -> bool {
     if let Some(cmd) = &prefs.mirror_hide_notification_cmd {
         return run_shell_cmd(cmd);
     }
-    if is_process_running("quickshell") || is_process_running("noctalia-shell") {
+    if (is_process_running("quickshell") || is_process_running("noctalia-shell"))
+        && command_exists("noctalia-shell")
+    {
         return run_shell_cmd("noctalia-shell ipc call notifications enableDND");
     }
     if is_process_running("mako") {
@@ -548,7 +566,9 @@ fn show_notification_cmd(prefs: &Prefs) {
         run_shell_cmd(cmd);
         return;
     }
-    if is_process_running("quickshell") || is_process_running("noctalia-shell") {
+    if (is_process_running("quickshell") || is_process_running("noctalia-shell"))
+        && command_exists("noctalia-shell")
+    {
         run_shell_cmd("noctalia-shell ipc call notifications disableDND");
         return;
     }
@@ -590,6 +610,60 @@ struct MirrorOptions<'a> {
     hide_bar: bool,
     hide_notification: bool,
     scaling: Option<&'a str>,
+}
+
+struct FilterState {
+    workspace_filter: Option<String>,
+    app_filter: Option<String>,
+    target_workspace_id: Option<u64>,
+    target_window_ids: Vec<u64>,
+}
+
+impl FilterState {
+    fn new(
+        niri: &Niri,
+        src: &str,
+        workspace_filter: Option<&str>,
+        app_filter: Option<&str>,
+    ) -> Self {
+        let mut s = Self {
+            workspace_filter: workspace_filter.map(String::from),
+            app_filter: app_filter.map(String::from),
+            target_workspace_id: None,
+            target_window_ids: Vec::new(),
+        };
+        s.refresh(niri, src);
+        s
+    }
+
+    fn refresh(&mut self, niri: &Niri, src: &str) {
+        if let Some(wf) = &self.workspace_filter {
+            let workspaces = niri.workspaces().unwrap_or_default();
+            self.target_workspace_id = workspaces
+                .iter()
+                .find(|w| {
+                    w.output.as_deref() == Some(src)
+                        && (w
+                            .name
+                            .as_deref()
+                            .is_some_and(|n| n.eq_ignore_ascii_case(wf))
+                            || w.idx.to_string() == *wf)
+                })
+                .map(|w| w.id);
+        }
+        if let Some(af) = &self.app_filter {
+            let windows = niri.windows().unwrap_or_default();
+            self.target_window_ids = windows
+                .iter()
+                .filter(|w| {
+                    w.app_id
+                        .as_deref()
+                        .is_some_and(|app| app.eq_ignore_ascii_case(af))
+                })
+                .map(|w| w.id)
+                .collect();
+        }
+    }
 }
 
 /// `ndm mirror <src> [dst]`: run wl-mirror and keep its window useful.
@@ -653,6 +727,28 @@ fn run_mirror(paths: &NiriDMPaths, niri: &Niri, src: &str, opts: &MirrorOptions)
     };
 
     let use_stream = opts.workspace.is_some() || opts.app.is_some();
+    let mut filter_state = FilterState::new(niri, src, opts.workspace, opts.app);
+
+    // If a workspace filter was specified, make sure that workspace is active on `src`
+    // before launching wl-mirror, so wl-mirror captures the clean target workspace first.
+    if let Some(wf) = opts.workspace {
+        let workspaces = niri.workspaces().unwrap_or_default();
+        let is_already_active = workspaces.iter().any(|w| {
+            w.output.as_deref() == Some(src)
+                && w.is_active
+                && (w
+                    .name
+                    .as_deref()
+                    .is_some_and(|n| n.eq_ignore_ascii_case(wf))
+                    || w.idx.to_string() == wf)
+        });
+        if !is_already_active {
+            let _ = niri.action("focus-workspace", &[wf]);
+            std::thread::sleep(Duration::from_millis(250));
+            filter_state.refresh(niri, src);
+        }
+    }
+
     let mut child = spawn_mirror(&tool, src, Some(&target), use_stream, opts.scaling)?;
     let mut stream = EventStream::open()?;
     let mut current_window: Option<u64> = None;
@@ -688,6 +784,7 @@ fn run_mirror(paths: &NiriDMPaths, niri: &Niri, src: &str, opts: &MirrorOptions)
                     current_window = Some(window.id);
                 }
                 if use_stream {
+                    filter_state.refresh(niri, src);
                     evaluate_filters(niri, src, &mut child, &mut frozen, opts.workspace, opts.app);
                 }
             }
@@ -697,15 +794,60 @@ fn run_mirror(paths: &NiriDMPaths, niri: &Niri, src: &str, opts: &MirrorOptions)
                     current_window = None;
                 }
                 if use_stream {
+                    filter_state.refresh(niri, src);
                     evaluate_filters(niri, src, &mut child, &mut frozen, opts.workspace, opts.app);
                 }
             }
-            Some(Event::WindowFocusChanged { .. })
-            | Some(Event::WorkspaceActivated { .. })
-            | Some(Event::WindowsChanged { .. })
-            | Some(Event::WorkspacesChanged { .. })
-                if use_stream =>
-            {
+            // Workspace transitions fire at the START of the animation.
+            // When moving away, freeze immediately so the display locks to the last clean frame.
+            // When returning, wait for the slide animation to finish settling before unfreezing.
+            Some(Event::WorkspaceActivated { id, .. }) if use_stream => {
+                if let Some(target_id) = filter_state.target_workspace_id {
+                    if id != target_id {
+                        set_frozen(&mut child, &mut frozen, true);
+                    } else {
+                        std::thread::sleep(Duration::from_millis(250));
+                        evaluate_filters(
+                            niri,
+                            src,
+                            &mut child,
+                            &mut frozen,
+                            opts.workspace,
+                            opts.app,
+                        );
+                    }
+                } else {
+                    set_frozen(&mut child, &mut frozen, true);
+                    std::thread::sleep(Duration::from_millis(250));
+                    filter_state.refresh(niri, src);
+                    evaluate_filters(niri, src, &mut child, &mut frozen, opts.workspace, opts.app);
+                }
+            }
+            Some(Event::WindowFocusChanged { id }) if use_stream => {
+                if opts.app.is_some() {
+                    let matches =
+                        id.is_some_and(|wid| filter_state.target_window_ids.contains(&wid));
+                    if !matches {
+                        set_frozen(&mut child, &mut frozen, true);
+                    } else {
+                        std::thread::sleep(Duration::from_millis(200));
+                        evaluate_filters(
+                            niri,
+                            src,
+                            &mut child,
+                            &mut frozen,
+                            opts.workspace,
+                            opts.app,
+                        );
+                    }
+                }
+            }
+            Some(Event::WorkspacesChanged { .. }) if use_stream => {
+                filter_state.refresh(niri, src);
+                evaluate_filters(niri, src, &mut child, &mut frozen, opts.workspace, opts.app);
+            }
+            Some(Event::WindowsChanged { .. }) if use_stream => {
+                filter_state.refresh(niri, src);
                 evaluate_filters(niri, src, &mut child, &mut frozen, opts.workspace, opts.app);
             }
             Some(_) => {}
