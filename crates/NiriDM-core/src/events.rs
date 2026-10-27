@@ -161,9 +161,47 @@ pub struct Window {
     pub workspace_id: Option<u64>,
     #[serde(default)]
     pub is_focused: bool,
+    /// Whether the window is in niri's floating layout.
+    #[serde(default)]
+    pub is_floating: bool,
+    /// Position- and size-related properties. niri only populates
+    /// `tile_pos_in_workspace_view` for floating windows (26.04), which is
+    /// exactly what app-only mirroring needs.
+    #[serde(default)]
+    pub layout: WindowLayout,
+}
+
+/// The subset of niri's [`WindowLayout`] NiriDM uses.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct WindowLayout {
+    #[serde(default)]
+    pub tile_size: (f64, f64),
+    #[serde(default)]
+    pub window_size: (i32, i32),
+    #[serde(default)]
+    pub tile_pos_in_workspace_view: Option<(f64, f64)>,
+    #[serde(default)]
+    pub window_offset_in_tile: (f64, f64),
 }
 
 impl Window {
+    /// The window's on-screen rectangle in output-local logical pixels:
+    /// `(x, y, width, height)`.
+    ///
+    /// niri only fills in `tile_pos_in_workspace_view` for floating windows
+    /// (as of 26.04), so app-only mirroring floats the selected window first.
+    pub fn screen_region(&self) -> Option<(f64, f64, f64, f64)> {
+        let (x, y) = self.layout.tile_pos_in_workspace_view?;
+        let (w, h) = self.layout.tile_size;
+        if !x.is_finite() || !y.is_finite() || !w.is_finite() || !h.is_finite() {
+            return None;
+        }
+        if w <= 0.0 || h <= 0.0 {
+            return None;
+        }
+        Some((x, y, w, h))
+    }
+
     /// Whether this window looks like the given tool. A known pid is the
     /// strongest signal (we spawned it ourselves); app id / title are the
     /// fallback for windows we did not spawn.
@@ -416,6 +454,8 @@ sleep 5"#,
             pid: Some(42),
             workspace_id: None,
             is_focused: false,
+            is_floating: false,
+            layout: WindowLayout::default(),
         };
         assert!(w.matches_tool("wl-mirror", Some(42)));
         // Our pid, but different tool name: pid wins (we spawned it).

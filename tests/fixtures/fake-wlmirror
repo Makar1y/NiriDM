@@ -8,6 +8,12 @@
 expect=
 output=
 stream=0
+if [ -n "${NDM_FAKE_MIRROR_ARGS:-}" ]; then
+  printf '%s\n' "$*" > "$NDM_FAKE_MIRROR_ARGS"
+fi
+if [ -n "${NDM_FAKE_MIRROR_PID:-}" ]; then
+  printf '%s\n' "$$" > "$NDM_FAKE_MIRROR_PID"
+fi
 for arg in "$@"; do
   if [ -n "$expect" ]; then expect=; continue; fi
   case "$arg" in
@@ -16,7 +22,10 @@ for arg in "$@"; do
         echo "error: options::parse(): unexpected trailing arguments after output name" >&2
         exit 1
       fi
-      [ "$arg" = "--fullscreen-output" ] && expect=1
+      case "$arg" in
+        --fullscreen-output|--region|--scaling|--title|--backend|--transform)
+          expect=1 ;;
+      esac
       [ "$arg" = "--stream" ] && stream=1
       ;;
     *) output=$arg ;;
@@ -30,5 +39,5 @@ if [ "$stream" = 1 ]; then
   done
   exit 0
 fi
-sleep 3
+sleep "${NDM_FAKE_MIRROR_SLEEP:-3}"
 exit 0

@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Milestone 4d smoke test: ndm mirror workspace/app filters drive wl-mirror's
-# stream-mode freeze/unfreeze as focus changes.
+# Milestone 4d smoke test: ndm mirror workspace filtering and app-only capture.
 #
 # Assertions here must actually fail the run: a bare `cmd && echo OK` never
 # aborts under `set -e`, so `ok`/`fail` helpers are used instead.
@@ -11,8 +10,11 @@ F=$R/tests/fixtures
 NDM=$R/target/debug/ndm
 H=$(mktemp -d "${TMPDIR:-/tmp}/niridm-m4d.XXXXXX")
 LOG=$H/mirror.stdin
+ARGS=$H/mirror.args
+ACTIONS=$H/actions.log
 WS=$H/ws
 APP=$H/app
+FLOAT=$H/floating
 EVENTS=$H/events
 
 ok()  { echo "OK: $*"; }
@@ -24,11 +26,15 @@ export NiriDM_CONFIG_DIR=$H
 export NIRI_CONFIG=$H/main.kdl
 export NDM_MOCK_STATE=$F/state-a.json
 export NDM_FAKE_MIRROR_LOG=$LOG
+export NDM_FAKE_MIRROR_ARGS=$ARGS
+export NDM_MOCK_ACTION_LOG=$ACTIONS
 
 run_case() {
   name=$1; shift
-  rm -f "$LOG"
-  "$NDM" mirror DP-1 eDP-1 --wl-mirror "$F/fake-wlmirror" "$@" 2>"$H/$name.err" &
+  local src=${NDM_TEST_SRC:-DP-1}
+  local dst=${NDM_TEST_DST:-eDP-1}
+  rm -f "$LOG" "$ARGS" "$ACTIONS"
+  "$NDM" mirror "$src" "$dst" --wl-mirror "$F/fake-wlmirror" "$@" 2>"$H/$name.err" &
   pid=$!
   sleep 3
   kill "$pid" 2>/dev/null || true
@@ -87,26 +93,68 @@ ok "stays live while source shows workspace 3 even when globally unfocused"
 unset NDM_MOCK_WS_FOCUSED
 
 echo
-echo "== app filter: freeze while another app is focused =="
-printf '4' > "$WS"
+echo "== app-only: float the window and capture only its region =="
+printf '3' > "$WS"
 printf 'firefox' > "$APP"
+printf '0' > "$FLOAT"
+export NDM_MOCK_APP=$APP
+export NDM_MOCK_FLOATING=$FLOAT
+export NDM_MOCK_WINDOWS=app
+unset NDM_MOCK_EVENTS 2>/dev/null || true
+run_case app --app firefox
+grep -q 'toggle-window-floating --id 7' "$ACTIONS" \
+  || fail "app window was not floated"
+ok "floated the app window so niri exposes its geometry"
+grep -q -- '--region' "$ARGS" || fail "wl-mirror was not given a region"
+grep -q '100,100 800x600' "$ARGS" || fail "region does not match the app window"
+ok "wl-mirror captures only the app window region"
+grep -q 'focus-window --id 7' "$ACTIONS" || fail "app window was not focused"
+ok "focused the app window (its workspace is now visible)"
+[ "$(grep -c 'toggle-window-floating --id 7' "$ACTIONS")" -eq 2 ] \
+  || fail "app window was not restored to tiling on exit"
+[ "$(cat "$FLOAT")" = 0 ] || fail "floating state was not restored"
+ok "restored the app window to tiling when the mirror stopped"
+
+echo
+echo "== app-only: region uses the source output's global origin =="
+printf '3' > "$WS"
+printf 'firefox' > "$APP"
+printf '0' > "$FLOAT"
+export NDM_MOCK_APP=$APP
+export NDM_MOCK_FLOATING=$FLOAT
+export NDM_MOCK_WINDOWS=app
+export NDM_MOCK_WS_OUTPUT=eDP-1
+export NDM_TEST_SRC=eDP-1
+export NDM_TEST_DST=DP-1
+unset NDM_MOCK_EVENTS 2>/dev/null || true
+run_case apporigin --app firefox
+grep -q '3940,100 800x600' "$ARGS" \
+  || fail "region did not include eDP-1's logical origin (3840,0)"
+ok "translated output-local window geometry into global region coordinates"
+unset NDM_MOCK_WS_OUTPUT NDM_TEST_SRC NDM_TEST_DST
+
+echo
+echo "== app-only: stop when the captured window closes =="
+printf '3' > "$WS"
+printf 'firefox' > "$APP"
+printf '0' > "$FLOAT"
 cat > "$EVENTS" <<'EOF'
 sleep 1
-app alacritty
-event {"WindowFocusChanged":{"id":8}}
-sleep 1
-app firefox
-event {"WindowFocusChanged":{"id":9}}
+event {"WindowClosed":{"id":7}}
 EOF
 export NDM_MOCK_APP=$APP
-export NDM_MOCK_WINDOWS=focus
-run_case app --app firefox
-assert_has --freeze "$LOG";   ok "froze when focus left app firefox"
-assert_has --unfreeze "$LOG"; ok "unfroze when firefox refocused"
+export NDM_MOCK_FLOATING=$FLOAT
+export NDM_MOCK_WINDOWS=app
+export NDM_MOCK_EVENTS=$EVENTS
+run_case appclose --app firefox
+grep -q "app window closed; stopping mirror" "$H/appclose.err" \
+  || fail "mirror did not stop when the app window closed"
+ok "closed the mirror when the app window disappeared"
 
 echo
 echo "== no filter: no stream commands at all =="
-unset NDM_MOCK_APP NDM_MOCK_WS NDM_MOCK_EVENTS NDM_MOCK_WINDOWS 2>/dev/null || true
+unset NDM_MOCK_APP NDM_MOCK_WS NDM_MOCK_EVENTS NDM_MOCK_WINDOWS \
+  NDM_MOCK_FLOATING 2>/dev/null || true
 run_case none
 [ ! -s "$LOG" ] || fail "filterless mirror must not freeze"
 ok "filterless mirror stays unfrozen"

@@ -216,7 +216,7 @@ fn field_row(screen: &Screen, field: Field) -> (String, String) {
         Field::MirrorApp => screen
             .mirror_app
             .clone()
-            .unwrap_or_else(|| "any app".into()),
+            .unwrap_or_else(|| "whole output".into()),
         Field::MirrorScaling => screen.mirror_scaling.label().to_string(),
         Field::MirrorHideBar => {
             if screen.mirror_hide_bar {

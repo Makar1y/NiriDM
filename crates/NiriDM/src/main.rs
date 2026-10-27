@@ -54,10 +54,11 @@ enum Cmd {
         /// Mirror tool to use (overrides `mirror-tool` in config.kdl).
         #[arg(long, value_name = "PATH")]
         wl_mirror: Option<PathBuf>,
-        /// Only mirror when this workspace is focused (freeze otherwise).
+        /// Only mirror while this workspace is shown on the source output.
         #[arg(long, value_name = "WORKSPACE")]
         workspace: Option<String>,
-        /// Only mirror when an app with this ID is focused (freeze otherwise).
+        /// Capture only this app's window instead of the whole source output.
+        /// The window is temporarily floated so niri can report its geometry.
         #[arg(long, value_name = "APP_ID")]
         app: Option<String>,
         /// Hide the status bar while mirroring.
@@ -486,11 +487,26 @@ fn command_exists(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Check whether any process whose cmdline contains `name` is running.
+/// Check whether a process with exactly this name is running.
 fn is_process_running(name: &str) -> bool {
     Command::new("pgrep")
-        .arg("-f")
+        .arg("-x")
         .arg(name)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Check whether any process whose cmdline contains `needle` is running.
+///
+/// Used for shells hosted by a generic runner (e.g. Quickshell's `qs -c
+/// noctalia-shell`), where the executable name says nothing about the config.
+fn is_process_running_f(needle: &str) -> bool {
+    Command::new("pgrep")
+        .arg("-f")
+        .arg(needle)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -509,95 +525,142 @@ fn run_shell_cmd(cmd: &str) -> bool {
     }
 }
 
-fn hide_bar_cmd(prefs: &Prefs) -> bool {
+/// Noctalia v5+ (`noctalia msg ...`). The executable name is exact so a v4
+/// `noctalia-shell` process is not mistaken for it.
+fn noctalia_v5_running() -> bool {
+    command_exists("noctalia") && is_process_running("noctalia")
+}
+
+/// Noctalia v4 (Quickshell) uses `noctalia-shell ipc call ...`. Its process is
+/// either the wrapper itself or the generic `qs`/`quickshell` runner with the
+/// config name on the command line.
+fn noctalia_v4_running() -> bool {
+    command_exists("noctalia-shell")
+        && (is_process_running("noctalia-shell")
+            || is_process_running_f("noctalia-shell")
+            || is_process_running_f("quickshell"))
+}
+
+/// The hide command and the matching restore command for a detected bar.
+fn detect_bar() -> Option<(&'static str, &'static str)> {
+    if noctalia_v5_running() {
+        return Some(("noctalia msg bar-hide", "noctalia msg bar-show"));
+    }
+    if noctalia_v4_running() {
+        return Some((
+            "noctalia-shell ipc call bar hideBar",
+            "noctalia-shell ipc call bar showBar",
+        ));
+    }
+    if is_process_running("waybar") {
+        // Waybar has no idempotent show/hide; SIGUSR1 toggles visibility.
+        return Some(("pkill -USR1 waybar", "pkill -USR1 waybar"));
+    }
+    None
+}
+
+/// The hide command and the matching restore command for a detected
+/// notification daemon.
+fn detect_notifier() -> Option<(&'static str, &'static str)> {
+    if noctalia_v5_running() {
+        return Some((
+            "noctalia msg notification-dnd-set on",
+            "noctalia msg notification-dnd-set off",
+        ));
+    }
+    if noctalia_v4_running() {
+        return Some((
+            "noctalia-shell ipc call notifications enableDND",
+            "noctalia-shell ipc call notifications disableDND",
+        ));
+    }
+    if is_process_running("mako") && command_exists("makoctl") {
+        return Some((
+            "makoctl mode -a do-not-disturb",
+            "makoctl mode -r do-not-disturb",
+        ));
+    }
+    if is_process_running("dunst") && command_exists("dunstctl") {
+        return Some(("dunstctl set-paused true", "dunstctl set-paused false"));
+    }
+    if is_process_running("swaync") && command_exists("swaync-client") {
+        // -dn/-df set the state explicitly (unlike -d, which toggles); -sw
+        // makes the client fail instead of waiting forever when swaync is down.
+        return Some(("swaync-client -dn -sw", "swaync-client -df -sw"));
+    }
+    None
+}
+
+/// Hide the bar and return the command that restores it.
+///
+/// Returning the restore command (instead of re-detecting later) means cleanup
+/// always undoes exactly what was done, even if the bar daemon restarts while
+/// the mirror is running.
+fn hide_bar_cmd(prefs: &Prefs) -> Option<String> {
     if let Some(cmd) = &prefs.mirror_hide_bar_cmd {
-        return run_shell_cmd(cmd);
-    }
-    if (is_process_running("quickshell") || is_process_running("noctalia-shell"))
-        && command_exists("noctalia-shell")
-    {
-        return run_shell_cmd("noctalia-shell ipc call bar hideBar");
-    }
-    if is_process_running("waybar") {
-        return run_shell_cmd("pkill -USR1 waybar");
-    }
-    false
-}
-
-fn show_bar_cmd(prefs: &Prefs) {
-    if let Some(cmd) = &prefs.mirror_show_bar_cmd {
-        run_shell_cmd(cmd);
-        return;
-    }
-    if (is_process_running("quickshell") || is_process_running("noctalia-shell"))
-        && command_exists("noctalia-shell")
-    {
-        run_shell_cmd("noctalia-shell ipc call bar showBar");
-        return;
-    }
-    if is_process_running("waybar") {
-        run_shell_cmd("pkill -USR1 waybar");
-    }
-}
-
-fn hide_notification_cmd(prefs: &Prefs) -> bool {
-    if let Some(cmd) = &prefs.mirror_hide_notification_cmd {
-        return run_shell_cmd(cmd);
-    }
-    if (is_process_running("quickshell") || is_process_running("noctalia-shell"))
-        && command_exists("noctalia-shell")
-    {
-        return run_shell_cmd("noctalia-shell ipc call notifications enableDND");
-    }
-    if is_process_running("mako") {
-        return run_shell_cmd("makoctl mode -a do-not-disturb");
-    }
-    if is_process_running("dunst") {
-        return run_shell_cmd("dunstctl set-paused true");
-    }
-    if is_process_running("swaync") {
-        return run_shell_cmd("swaync-client -d -s");
-    }
-    false
-}
-
-fn show_notification_cmd(prefs: &Prefs) {
-    if let Some(cmd) = &prefs.mirror_show_notification_cmd {
-        run_shell_cmd(cmd);
-        return;
-    }
-    if (is_process_running("quickshell") || is_process_running("noctalia-shell"))
-        && command_exists("noctalia-shell")
-    {
-        run_shell_cmd("noctalia-shell ipc call notifications disableDND");
-        return;
-    }
-    if is_process_running("mako") {
-        run_shell_cmd("makoctl mode -r do-not-disturb");
-        return;
-    }
-    if is_process_running("dunst") {
-        run_shell_cmd("dunstctl set-paused false");
-        return;
-    }
-    if is_process_running("swaync") {
-        run_shell_cmd("swaync-client -d -u");
-    }
-}
-
-struct MirrorCleanup<'a> {
-    prefs: &'a Prefs,
-    bar_hidden: bool,
-    notif_hidden: bool,
-}
-
-impl<'a> Drop for MirrorCleanup<'a> {
-    fn drop(&mut self) {
-        if self.bar_hidden {
-            show_bar_cmd(self.prefs);
+        if !run_shell_cmd(cmd) {
+            return None;
         }
-        if self.notif_hidden {
-            show_notification_cmd(self.prefs);
+        return match &prefs.mirror_show_bar_cmd {
+            Some(show) => Some(show.clone()),
+            None => {
+                tracing::warn!(
+                    "mirror-hide-bar-cmd is set without mirror-show-bar-cmd; the bar will stay hidden"
+                );
+                None
+            }
+        };
+    }
+    let (hide, show) = detect_bar()?;
+    run_shell_cmd(hide).then(|| show.to_owned())
+}
+
+/// Suppress notifications and return the command that restores them.
+fn hide_notification_cmd(prefs: &Prefs) -> Option<String> {
+    if let Some(cmd) = &prefs.mirror_hide_notification_cmd {
+        if !run_shell_cmd(cmd) {
+            return None;
+        }
+        return match &prefs.mirror_show_notification_cmd {
+            Some(show) => Some(show.clone()),
+            None => {
+                tracing::warn!(
+                    "mirror-hide-notification-cmd is set without mirror-show-notification-cmd; notifications will stay suppressed"
+                );
+                None
+            }
+        };
+    }
+    let (hide, show) = detect_notifier()?;
+    run_shell_cmd(hide).then(|| show.to_owned())
+}
+
+struct MirrorCleanup {
+    bar_show: Option<String>,
+    notif_show: Option<String>,
+    /// App window we moved from tiling to floating for app-only capture.
+    /// Restored on every exit path (including signals and hot-unplug).
+    app_unfloat: Option<u64>,
+}
+
+impl Drop for MirrorCleanup {
+    fn drop(&mut self) {
+        if let Some(id) = self.app_unfloat {
+            let niri = Niri::new();
+            let id_str = id.to_string();
+            // Only toggle back if the window still exists and is still
+            // floating; the user may have closed it or tiled it themselves.
+            if let Ok(windows) = niri.windows() {
+                if windows.iter().any(|w| w.id == id && w.is_floating) {
+                    let _ = niri.action("toggle-window-floating", &["--id", &id_str]);
+                }
+            }
+        }
+        if let Some(cmd) = &self.bar_show {
+            run_shell_cmd(cmd);
+        }
+        if let Some(cmd) = &self.notif_show {
+            run_shell_cmd(cmd);
         }
     }
 }
@@ -614,23 +677,14 @@ struct MirrorOptions<'a> {
 
 struct FilterState {
     workspace_filter: Option<String>,
-    app_filter: Option<String>,
     target_workspace_id: Option<u64>,
-    target_window_ids: Vec<u64>,
 }
 
 impl FilterState {
-    fn new(
-        niri: &Niri,
-        src: &str,
-        workspace_filter: Option<&str>,
-        app_filter: Option<&str>,
-    ) -> Self {
+    fn new(niri: &Niri, src: &str, workspace_filter: Option<&str>) -> Self {
         let mut s = Self {
             workspace_filter: workspace_filter.map(String::from),
-            app_filter: app_filter.map(String::from),
             target_workspace_id: None,
-            target_window_ids: Vec::new(),
         };
         s.refresh(niri, src);
         s
@@ -651,19 +705,120 @@ impl FilterState {
                 })
                 .map(|w| w.id);
         }
-        if let Some(af) = &self.app_filter {
-            let windows = niri.windows().unwrap_or_default();
-            self.target_window_ids = windows
-                .iter()
-                .filter(|w| {
-                    w.app_id
-                        .as_deref()
-                        .is_some_and(|app| app.eq_ignore_ascii_case(af))
-                })
-                .map(|w| w.id)
-                .collect();
-        }
     }
+}
+
+/// A rectangle to capture from the source output, in global logical pixels
+/// (wl-mirror's slurp-style region format).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Region {
+    x: i64,
+    y: i64,
+    w: i64,
+    h: i64,
+}
+
+impl Region {
+    /// Build a region from a window's output-local geometry and the source
+    /// output's global bounds `(x, y, width, height)`.
+    ///
+    /// niri's `tile_pos_in_workspace_view` is relative to the output, while
+    /// wl-mirror interprets `--region` in the global layout (slurp) coordinate
+    /// space and then translates it into the named output's coordinates. A
+    /// source output at `(0, 0)` hides the difference; a secondary output does
+    /// not (`output does not contain region`).
+    ///
+    /// The result is clamped to the output because wl-mirror refuses a region
+    /// that is not fully contained in it (a floating window may hang over the
+    /// edge).
+    fn from_layout(x: f64, y: f64, w: f64, h: f64, bounds: (f64, f64, f64, f64)) -> Option<Self> {
+        let (ox, oy, ow, oh) = bounds;
+        let left = x + ox;
+        let top = y + oy;
+        let right = left + w;
+        let bottom = top + h;
+        if !left.is_finite()
+            || !top.is_finite()
+            || !right.is_finite()
+            || !bottom.is_finite()
+            || !ow.is_finite()
+            || !oh.is_finite()
+        {
+            return None;
+        }
+        let left = left.max(ox).round() as i64;
+        let top = top.max(oy).round() as i64;
+        let right = right.min(ox + ow).round() as i64;
+        let bottom = bottom.min(oy + oh).round() as i64;
+        let region = Self {
+            x: left,
+            y: top,
+            w: right - left,
+            h: bottom - top,
+        };
+        (region.w > 0 && region.h > 0).then_some(region)
+    }
+
+    /// `"<x>,<y> <w>x<h>"`, the slurp format wl-mirror expects.
+    fn wl_arg(self) -> String {
+        format!("{},{} {}x{}", self.x, self.y, self.w, self.h)
+    }
+
+    /// One stream-mode line updating the captured region.
+    fn stream_cmd(self) -> String {
+        format!("--region \"{}\"", self.wl_arg())
+    }
+}
+
+/// State for `--app`: capture exactly one floating window instead of the
+/// whole source output.
+struct AppCapture {
+    window_id: u64,
+    workspace_id: Option<u64>,
+    last_region: Option<Region>,
+}
+
+impl AppCapture {
+    fn region(&self) -> Option<Region> {
+        self.last_region
+    }
+}
+
+/// Set when `ndm mirror` receives SIGINT/SIGTERM/SIGHUP.
+///
+/// The handler itself only flips this flag (async-signal-safe); the main loop
+/// notices it, kills wl-mirror, and returns so [`MirrorCleanup`] can restore
+/// the bar and notifications.
+#[cfg(unix)]
+static INTERRUPTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(unix)]
+extern "C" fn on_termination_signal(_: libc::c_int) {
+    INTERRUPTED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(unix)]
+fn install_termination_handlers() {
+    INTERRUPTED.store(false, std::sync::atomic::Ordering::SeqCst);
+    let handler = on_termination_signal as *const () as libc::sighandler_t;
+    unsafe {
+        libc::signal(libc::SIGINT, handler);
+        libc::signal(libc::SIGTERM, handler);
+        libc::signal(libc::SIGHUP, handler);
+    }
+}
+
+#[cfg(not(unix))]
+fn install_termination_handlers() {}
+
+#[cfg(unix)]
+fn termination_requested() -> bool {
+    INTERRUPTED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[cfg(not(unix))]
+fn termination_requested() -> bool {
+    false
 }
 
 /// `ndm mirror <src> [dst]`: run wl-mirror and keep its window useful.
@@ -685,19 +840,25 @@ fn run_mirror(paths: &NiriDMPaths, niri: &Niri, src: &str, opts: &MirrorOptions)
 
     // Resolve the target output before touching anything.
     let outputs = niri.outputs().context("querying niri outputs")?;
+    if !outputs.iter().any(|o| o.name == src && o.is_on()) {
+        bail!("output `{src}` is not connected or off");
+    }
     let target = match opts.dst {
         Some(d) => {
             if d == src {
                 bail!("cannot mirror an output onto itself");
             }
-            if !outputs.iter().any(|o| o.name == d) {
-                bail!("output `{d}` is not connected");
+            if !outputs.iter().any(|o| o.name == d && o.is_on()) {
+                bail!("output `{d}` is not connected or off");
             }
             d.to_owned()
         }
         None => {
-            let fallback = outputs.iter().find(|o| o.name != src);
-            match outputs.iter().find(|o| o.is_focused && o.name != src) {
+            let fallback = outputs.iter().find(|o| o.name != src && o.is_on());
+            match outputs
+                .iter()
+                .find(|o| o.is_focused && o.name != src && o.is_on())
+            {
                 Some(o) => o.name.clone(),
                 None => match fallback {
                     Some(o) => o.name.clone(),
@@ -710,24 +871,32 @@ fn run_mirror(paths: &NiriDMPaths, niri: &Niri, src: &str, opts: &MirrorOptions)
     eprintln!("mirroring {src} -> {target} via {}", tool.display());
     eprintln!("close the mirror window (or stop this process) to end the mirror");
 
-    let bar_hidden = if opts.hide_bar {
+    // Install termination handlers before touching the bar/notification
+    // state, so Ctrl-C / systemd stop still restores what we hid.
+    install_termination_handlers();
+
+    let bar_show = if opts.hide_bar {
         hide_bar_cmd(&prefs)
     } else {
-        false
+        None
     };
-    let notif_hidden = if opts.hide_notification {
+    let notif_show = if opts.hide_notification {
         hide_notification_cmd(&prefs)
     } else {
-        false
+        None
     };
-    let _cleanup = MirrorCleanup {
-        prefs: &prefs,
-        bar_hidden,
-        notif_hidden,
+    let mut cleanup = MirrorCleanup {
+        bar_show,
+        notif_show,
+        app_unfloat: None,
     };
 
-    let use_stream = opts.workspace.is_some() || opts.app.is_some();
-    let mut filter_state = FilterState::new(niri, src, opts.workspace, opts.app);
+    // A signal may have arrived while the hide commands were running.
+    if termination_requested() {
+        return Ok(());
+    }
+
+    let mut filter_state = FilterState::new(niri, src, opts.workspace);
 
     // If a workspace filter was specified, make sure that workspace is active on `src`
     // before launching wl-mirror, so wl-mirror captures the clean target workspace first.
@@ -749,43 +918,135 @@ fn run_mirror(paths: &NiriDMPaths, niri: &Niri, src: &str, opts: &MirrorOptions)
         }
     }
 
-    let mut child = spawn_mirror(&tool, src, Some(&target), use_stream, opts.scaling)?;
+    // App-only mode: float the selected window so niri exposes its on-screen
+    // geometry, then capture just that rectangle instead of the whole output.
+    let mut app_capture = match opts.app {
+        Some(app) => Some(setup_app_capture(niri, src, app, &mut cleanup)?),
+        None => None,
+    };
+    let use_stream = opts.workspace.is_some() || app_capture.is_some();
+    let initial_region = app_capture.as_ref().and_then(AppCapture::region);
+
+    let mut child = spawn_mirror(
+        &tool,
+        src,
+        use_stream,
+        opts.scaling,
+        initial_region.as_ref(),
+    )?;
     let mut stream = EventStream::open()?;
     let mut current_window: Option<u64> = None;
+    // Window we already moved + fullscreened. Steering is a one-shot per
+    // window: `fullscreen-window` *toggles*, so re-steering on every
+    // `WindowOpenedOrChanged` (including the ones our own actions cause)
+    // would immediately take the mirror back out of fullscreen.
+    let mut steered_window: Option<u64> = None;
     let mut frozen = false;
+    let mut last_output_check = Instant::now() - Duration::from_secs(1);
+    let mut last_app_check = Instant::now() - Duration::from_secs(1);
 
-    // Freeze the mirror whenever the focused workspace/app does not match the
-    // filter, and unfreeze it when focus returns. The compositor reports focus
-    // through `WindowFocusChanged` / `WorkspaceActivated`, so we re-evaluate on
-    // those (and on the wholesale `*Changed` snapshots) rather than guessing.
+    // Refresh the active filter and stop if the captured app window is gone.
+    // This is a macro rather than a closure because it needs mutable access to
+    // several loop-local values at once.
+    macro_rules! tick_or_stop {
+        () => {
+            if !tick_mirror(
+                niri,
+                src,
+                &mut child,
+                &mut frozen,
+                &mut filter_state,
+                &mut app_capture,
+                opts.workspace,
+            )? {
+                eprintln!("app window closed; stopping mirror");
+                let _ = child.kill();
+                let _ = child.wait();
+                return Ok(());
+            }
+        };
+    }
+
+    // Freeze the mirror whenever the filtered workspace or captured app is not
+    // visible on the source output, and unfreeze it when it returns. The
+    // compositor reports focus through `WindowFocusChanged` /
+    // `WorkspaceActivated`, so we re-evaluate on those (and on the wholesale
+    // `*Changed` snapshots) rather than guessing.
     if use_stream {
-        evaluate_filters(niri, src, &mut child, &mut frozen, opts.workspace, opts.app);
+        tick_or_stop!();
     }
 
     loop {
+        if termination_requested() {
+            eprintln!("stopping mirror");
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(());
+        }
+
+        // niri 26.04 has no output-change event, so poll. This is what closes
+        // the mirror when the source or target monitor is unplugged: without
+        // it, niri may move the wl-mirror window elsewhere (or wl-mirror may
+        // die and be restarted) and the mirror would linger on a wrong output.
+        if last_output_check.elapsed() >= Duration::from_secs(1) {
+            last_output_check = Instant::now();
+            match missing_mirror_output(niri, src, &target) {
+                Ok(Some(gone)) => {
+                    eprintln!("output `{gone}` disconnected; stopping mirror");
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Ok(());
+                }
+                Ok(None) => {}
+                Err(e) => tracing::warn!("could not check mirror outputs: {e:#}"),
+            }
+        }
+
+        // Follow the app window while it is dragged/resized, and freeze if its
+        // workspace is not the one currently shown on the source output.
+        if app_capture.is_some() && last_app_check.elapsed() >= Duration::from_millis(500) {
+            last_app_check = Instant::now();
+            tick_or_stop!();
+        }
+
         // An existing wl-mirror window (started before us, or our own) is
-        // steered right away; afterwards new ones are caught on the stream.
+        // picked up right away; afterwards new ones are caught on the stream.
         if current_window.is_none() {
             if let Ok(windows) = niri.windows() {
                 if let Some(w) = windows
                     .iter()
                     .find(|w| w.matches_tool("wl-mirror", Some(child.id())))
                 {
-                    let _ = steer_window(niri, w.id, &target);
                     current_window = Some(w.id);
                 }
             }
         }
 
-        match stream.next(Duration::from_secs(1))? {
+        // Steer a window that has not been steered yet. Retrying on the next
+        // tick covers the race where the window exists but niri is not ready
+        // to act on it yet.
+        if let Some(id) = current_window {
+            if steered_window != Some(id) {
+                match steer_window(niri, id, &target) {
+                    Ok(()) => steered_window = Some(id),
+                    Err(e) => tracing::warn!("could not steer wl-mirror window {id} yet: {e:#}"),
+                }
+            }
+        }
+
+        let timeout = if app_capture.is_some() {
+            Duration::from_millis(500)
+        } else {
+            Duration::from_secs(1)
+        };
+        match stream.next(timeout)? {
             Some(Event::WindowOpenedOrChanged { window }) => {
                 if window.matches_tool("wl-mirror", Some(child.id())) {
-                    let _ = steer_window(niri, window.id, &target);
                     current_window = Some(window.id);
                 }
                 if use_stream {
-                    filter_state.refresh(niri, src);
-                    evaluate_filters(niri, src, &mut child, &mut frozen, opts.workspace, opts.app);
+                    last_app_check = Instant::now();
+                    tick_or_stop!();
                 }
             }
             Some(Event::WindowClosed { id }) => {
@@ -793,67 +1054,63 @@ fn run_mirror(paths: &NiriDMPaths, niri: &Niri, src: &str, opts: &MirrorOptions)
                     tracing::debug!("mirror window {id} closed");
                     current_window = None;
                 }
+                if steered_window == Some(id) {
+                    steered_window = None;
+                }
+                if app_capture
+                    .as_ref()
+                    .is_some_and(|capture| capture.window_id == id)
+                {
+                    eprintln!("app window closed; stopping mirror");
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Ok(());
+                }
                 if use_stream {
-                    filter_state.refresh(niri, src);
-                    evaluate_filters(niri, src, &mut child, &mut frozen, opts.workspace, opts.app);
+                    last_app_check = Instant::now();
+                    tick_or_stop!();
                 }
             }
             // Workspace transitions fire at the START of the animation.
             // When moving away, freeze immediately so the display locks to the last clean frame.
             // When returning, wait for the slide animation to finish settling before unfreezing.
             Some(Event::WorkspaceActivated { id, .. }) if use_stream => {
-                if let Some(target_id) = filter_state.target_workspace_id {
+                if app_capture.is_some() {
+                    std::thread::sleep(Duration::from_millis(250));
+                    last_app_check = Instant::now();
+                    tick_or_stop!();
+                } else if let Some(target_id) = filter_state.target_workspace_id {
                     if id != target_id {
                         set_frozen(&mut child, &mut frozen, true);
                     } else {
                         std::thread::sleep(Duration::from_millis(250));
-                        evaluate_filters(
-                            niri,
-                            src,
-                            &mut child,
-                            &mut frozen,
-                            opts.workspace,
-                            opts.app,
-                        );
+                        tick_or_stop!();
                     }
                 } else {
                     set_frozen(&mut child, &mut frozen, true);
                     std::thread::sleep(Duration::from_millis(250));
-                    filter_state.refresh(niri, src);
-                    evaluate_filters(niri, src, &mut child, &mut frozen, opts.workspace, opts.app);
+                    tick_or_stop!();
                 }
             }
-            Some(Event::WindowFocusChanged { id }) if use_stream => {
-                if opts.app.is_some() {
-                    let matches =
-                        id.is_some_and(|wid| filter_state.target_window_ids.contains(&wid));
-                    if !matches {
-                        set_frozen(&mut child, &mut frozen, true);
-                    } else {
-                        std::thread::sleep(Duration::from_millis(200));
-                        evaluate_filters(
-                            niri,
-                            src,
-                            &mut child,
-                            &mut frozen,
-                            opts.workspace,
-                            opts.app,
-                        );
-                    }
-                }
+            Some(Event::WindowFocusChanged { .. }) if use_stream => {
+                // Focus can change the source output's active workspace (e.g.
+                // focusing a window on another workspace), so always re-check
+                // from fresh state after it settles.
+                std::thread::sleep(Duration::from_millis(200));
+                last_app_check = Instant::now();
+                tick_or_stop!();
             }
-            Some(Event::WorkspacesChanged { .. }) if use_stream => {
-                filter_state.refresh(niri, src);
-                evaluate_filters(niri, src, &mut child, &mut frozen, opts.workspace, opts.app);
-            }
-            Some(Event::WindowsChanged { .. }) if use_stream => {
-                filter_state.refresh(niri, src);
-                evaluate_filters(niri, src, &mut child, &mut frozen, opts.workspace, opts.app);
+            Some(Event::WorkspacesChanged { .. }) | Some(Event::WindowsChanged { .. })
+                if use_stream =>
+            {
+                last_app_check = Instant::now();
+                tick_or_stop!();
             }
             Some(_) => {}
             None => {
                 if use_stream {
-                    evaluate_filters(niri, src, &mut child, &mut frozen, opts.workspace, opts.app);
+                    last_app_check = Instant::now();
+                    tick_or_stop!();
                 }
             }
         }
@@ -864,13 +1121,26 @@ fn run_mirror(paths: &NiriDMPaths, niri: &Niri, src: &str, opts: &MirrorOptions)
                 return Ok(());
             }
             Some(status) => {
+                // Don't resurrect the mirror after the monitor it belongs to
+                // was unplugged (wl-mirror often dies with its output).
+                match missing_mirror_output(niri, src, &target) {
+                    Ok(Some(gone)) => {
+                        eprintln!("output `{gone}` disconnected; stopping mirror");
+                        return Ok(());
+                    }
+                    Ok(None) => {}
+                    Err(e) => tracing::warn!("could not check mirror outputs: {e:#}"),
+                }
                 tracing::warn!("wl-mirror died ({status}); restarting");
                 std::thread::sleep(Duration::from_secs(1));
-                child = spawn_mirror(&tool, src, Some(&target), use_stream, opts.scaling)?;
+                let region = app_capture.as_ref().and_then(AppCapture::region);
+                child = spawn_mirror(&tool, src, use_stream, opts.scaling, region.as_ref())?;
                 current_window = None;
+                steered_window = None;
                 frozen = false;
                 if use_stream {
-                    evaluate_filters(niri, src, &mut child, &mut frozen, opts.workspace, opts.app);
+                    last_app_check = Instant::now();
+                    tick_or_stop!();
                 }
             }
             None => {}
@@ -905,79 +1175,285 @@ fn set_frozen(child: &mut Child, frozen: &mut bool, should_freeze: bool) {
     *frozen = should_freeze;
 }
 
-/// Whether the source output currently satisfies the filters. wl-mirror shows
-/// exactly one workspace: the one *active* on `src` (niri reports `is_active`
-/// per output; `is_focused` is the single focused workspace across all
-/// outputs, which the mirror window itself steals on the target). Querying
-/// fresh state (instead of trusting an event payload) keeps this correct even
-/// when several changes race.
-fn filters_match(
-    niri: &Niri,
-    src: &str,
-    workspace_filter: Option<&str>,
-    app_filter: Option<&str>,
-) -> bool {
-    let workspaces = niri.workspaces().unwrap_or_default();
-    let active = workspaces
-        .iter()
-        .find(|w| w.is_active && w.output.as_deref() == Some(src));
-
-    if let Some(wf) = workspace_filter {
-        let matches_name = active
-            .and_then(|w| w.name.as_deref())
-            .is_some_and(|n| n.eq_ignore_ascii_case(wf));
-        let matches_idx = active.is_some_and(|w| w.idx.to_string() == wf);
-        if !matches_name && !matches_idx {
-            return false;
+/// First of `src`/`target` that is no longer connected or is switched off.
+///
+/// niri 26.04 does not emit an output-change event, so [`run_mirror`] polls
+/// this once a second. Returning `Some` is what ends the mirror when a monitor
+/// is unplugged.
+fn missing_mirror_output(niri: &Niri, src: &str, target: &str) -> Result<Option<String>> {
+    let outputs = niri.outputs().context("querying niri outputs")?;
+    for name in [src, target] {
+        if !outputs.iter().any(|o| o.name == name && o.is_on()) {
+            return Ok(Some(name.to_owned()));
         }
     }
-    if let Some(af) = app_filter {
-        let Some(active_ws) = active else {
-            return false;
-        };
-        let windows = niri.windows().unwrap_or_default();
-        let target_window = windows
-            .iter()
-            .find(|w| {
-                w.workspace_id == Some(active_ws.id)
-                    && (w.is_focused || active_ws.active_window_id == Some(w.id))
-            })
-            .or_else(|| {
-                windows.iter().find(|w| {
-                    w.workspace_id == Some(active_ws.id) && !w.matches_tool("wl-mirror", None)
-                })
-            });
-
-        let app = target_window.and_then(|w| w.app_id.as_deref());
-        if !app.is_some_and(|a| a.eq_ignore_ascii_case(af)) {
-            return false;
-        }
-    }
-    true
+    Ok(None)
 }
 
-/// Re-evaluate the filters and freeze/unfreeze the mirror to match.
+/// Whether the workspace shown on `src` satisfies `workspace_filter`.
+///
+/// wl-mirror shows exactly one workspace: the one *active* on `src` (niri
+/// reports `is_active` per output; `is_focused` is the single focused
+/// workspace across all outputs, which the mirror window itself steals on the
+/// target). Querying fresh state keeps this correct even when several changes
+/// race.
+fn workspace_matches(
+    workspaces: &[ndm_core::events::Workspace],
+    src: &str,
+    workspace_filter: Option<&str>,
+) -> bool {
+    let Some(wf) = workspace_filter else {
+        return true;
+    };
+    workspaces
+        .iter()
+        .find(|w| w.is_active && w.output.as_deref() == Some(src))
+        .is_some_and(|w| {
+            w.name
+                .as_deref()
+                .is_some_and(|n| n.eq_ignore_ascii_case(wf))
+                || w.idx.to_string() == wf
+        })
+}
+
+/// Re-evaluate a workspace-only filter and freeze/unfreeze to match.
 fn evaluate_filters(
     niri: &Niri,
     src: &str,
     child: &mut Child,
     frozen: &mut bool,
     workspace_filter: Option<&str>,
-    app_filter: Option<&str>,
 ) {
-    let matched = filters_match(niri, src, workspace_filter, app_filter);
-    set_frozen(child, frozen, !matched);
+    let workspaces = niri.workspaces().unwrap_or_default();
+    set_frozen(
+        child,
+        frozen,
+        !workspace_matches(&workspaces, src, workspace_filter),
+    );
+}
+
+/// Refresh whichever filter is active. Returns `false` only when the app
+/// window being captured has closed.
+fn tick_mirror(
+    niri: &Niri,
+    src: &str,
+    child: &mut Child,
+    frozen: &mut bool,
+    filter_state: &mut FilterState,
+    app_capture: &mut Option<AppCapture>,
+    workspace_filter: Option<&str>,
+) -> Result<bool> {
+    if let Some(capture) = app_capture.as_mut() {
+        service_app_capture(niri, src, child, capture, frozen, workspace_filter)
+    } else {
+        filter_state.refresh(niri, src);
+        evaluate_filters(niri, src, child, frozen, workspace_filter);
+        Ok(true)
+    }
+}
+
+/// Global logical bounds `(x, y, width, height)` of `src`, used to translate a
+/// window's output-local geometry into wl-mirror's global region coordinates.
+fn output_bounds(niri: &Niri, src: &str) -> Result<(f64, f64, f64, f64)> {
+    let outputs = niri.outputs().context("querying niri outputs")?;
+    let logical = outputs
+        .iter()
+        .find(|o| o.name == src)
+        .and_then(|o| o.logical.as_ref())
+        .with_context(|| format!("source output `{src}` has no logical geometry"))?;
+    Ok((
+        f64::from(logical.x),
+        f64::from(logical.y),
+        f64::from(logical.width),
+        f64::from(logical.height),
+    ))
+}
+
+/// Pick the app window to capture, float it so niri reports its on-screen
+/// geometry, and focus it so its workspace is active on `src`.
+///
+/// niri 26.04 only fills in `tile_pos_in_workspace_view` for floating windows;
+/// that is the reason app-only mirroring floats the window. The window is
+/// restored to tiling by [`MirrorCleanup`] on every exit path.
+fn setup_app_capture(
+    niri: &Niri,
+    src: &str,
+    app: &str,
+    cleanup: &mut MirrorCleanup,
+) -> Result<AppCapture> {
+    let windows = niri.windows().context("querying niri windows")?;
+    let workspaces = niri.workspaces().context("querying niri workspaces")?;
+    let bounds = output_bounds(niri, src)?;
+
+    let matching: Vec<&ndm_core::events::Window> = windows
+        .iter()
+        .filter(|w| {
+            w.app_id
+                .as_deref()
+                .is_some_and(|candidate| candidate.eq_ignore_ascii_case(app))
+        })
+        .collect();
+    if matching.is_empty() {
+        bail!("no window for app `{app}` is open");
+    }
+
+    let on_src = |w: &ndm_core::events::Window| {
+        w.workspace_id
+            .and_then(|id| workspaces.iter().find(|ws| ws.id == id))
+            .is_some_and(|ws| ws.output.as_deref() == Some(src))
+    };
+    let active_workspace = workspaces
+        .iter()
+        .find(|ws| ws.is_active && ws.output.as_deref() == Some(src))
+        .map(|ws| ws.id);
+    let chosen = matching
+        .iter()
+        .copied()
+        .find(|w| w.is_focused && on_src(w))
+        .or_else(|| {
+            matching
+                .iter()
+                .copied()
+                .find(|w| w.workspace_id == active_workspace && on_src(w))
+        })
+        .or_else(|| matching.iter().copied().find(|w| on_src(w)))
+        .unwrap_or(matching[0]);
+
+    if !on_src(chosen) {
+        let output = chosen
+            .workspace_id
+            .and_then(|id| workspaces.iter().find(|ws| ws.id == id))
+            .and_then(|ws| ws.output.clone())
+            .unwrap_or_else(|| "another output".to_owned());
+        bail!("app `{app}` is on `{output}`, not the mirror source `{src}`");
+    }
+
+    let id = chosen.id;
+    let id_str = id.to_string();
+    if !chosen.is_floating {
+        niri.action("toggle-window-floating", &["--id", &id_str])
+            .with_context(|| format!("floating app window {id} for app-only mirroring"))?;
+        // From here on, every exit path must put the window back.
+        cleanup.app_unfloat = Some(id);
+        std::thread::sleep(Duration::from_millis(150));
+    }
+    niri.action("focus-window", &["--id", &id_str])
+        .with_context(|| format!("focusing app window {id}"))?;
+    std::thread::sleep(Duration::from_millis(250));
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let windows = niri.windows().context("querying niri windows")?;
+        let Some(window) = windows.iter().find(|w| w.id == id) else {
+            bail!("app window {id} closed while starting the mirror");
+        };
+        let workspaces = niri.workspaces().unwrap_or_default();
+        let visible = window
+            .workspace_id
+            .and_then(|wsid| workspaces.iter().find(|ws| ws.id == wsid))
+            .is_some_and(|ws| ws.output.as_deref() == Some(src) && ws.is_active);
+        if visible {
+            if let Some(region) = window
+                .screen_region()
+                .and_then(|(x, y, w, h)| Region::from_layout(x, y, w, h, bounds))
+            {
+                eprintln!(
+                    "capturing app `{app}` window {id} region {}",
+                    region.wl_arg()
+                );
+                return Ok(AppCapture {
+                    window_id: id,
+                    workspace_id: window.workspace_id,
+                    last_region: Some(region),
+                });
+            }
+        }
+        if Instant::now() >= deadline {
+            bail!(
+                "could not determine the on-screen geometry of app `{app}` (window {id}); \
+                 is it floating and visible on `{src}`?"
+            );
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Follow the captured app window: update the wl-mirror region when it moves
+/// or resizes, and freeze while its workspace is not shown on `src`.
+///
+/// Returns `false` when the window no longer exists.
+fn service_app_capture(
+    niri: &Niri,
+    src: &str,
+    child: &mut Child,
+    capture: &mut AppCapture,
+    frozen: &mut bool,
+    workspace_filter: Option<&str>,
+) -> Result<bool> {
+    let windows = match niri.windows() {
+        Ok(windows) => windows,
+        Err(e) => {
+            tracing::warn!("could not query app window: {e:#}");
+            set_frozen(child, frozen, true);
+            return Ok(true);
+        }
+    };
+    let Some(window) = windows.iter().find(|w| w.id == capture.window_id) else {
+        return Ok(false);
+    };
+    capture.workspace_id = window.workspace_id;
+
+    let workspaces = match niri.workspaces() {
+        Ok(workspaces) => workspaces,
+        Err(e) => {
+            tracing::warn!("could not query workspaces: {e:#}");
+            set_frozen(child, frozen, true);
+            return Ok(true);
+        }
+    };
+    let visible = window
+        .workspace_id
+        .and_then(|id| workspaces.iter().find(|ws| ws.id == id))
+        .is_some_and(|ws| ws.output.as_deref() == Some(src) && ws.is_active);
+    if !visible || !workspace_matches(&workspaces, src, workspace_filter) {
+        set_frozen(child, frozen, true);
+        return Ok(true);
+    }
+
+    let bounds = match output_bounds(niri, src) {
+        Ok(bounds) => bounds,
+        Err(e) => {
+            tracing::warn!("could not query source output bounds: {e:#}");
+            set_frozen(child, frozen, true);
+            return Ok(true);
+        }
+    };
+    let Some(region) = window
+        .screen_region()
+        .and_then(|(x, y, w, h)| Region::from_layout(x, y, w, h, bounds))
+    else {
+        // The user tiled the window again, or niri lost its geometry.
+        set_frozen(child, frozen, true);
+        return Ok(true);
+    };
+    if capture.last_region != Some(region) {
+        send_mirror_cmd(child, &region.stream_cmd());
+        capture.last_region = Some(region);
+    }
+    set_frozen(child, frozen, false);
+    Ok(true)
 }
 
 /// Move the given window onto `target` and fullscreen it.
+///
+/// `fullscreen-window` toggles, so callers must only invoke this once per
+/// window (see `steered_window` in [`run_mirror`]).
 fn steer_window(niri: &Niri, id: u64, target: &str) -> Result<()> {
     let id_str = id.to_string();
-    if let Err(e) = niri.action("move-window-to-monitor", &["--id", &id_str, target]) {
-        tracing::warn!("failed to move wl-mirror window {id} to {target}: {e}");
-    }
-    if let Err(e) = niri.action("fullscreen-window", &["--id", &id_str]) {
-        tracing::warn!("failed to fullscreen wl-mirror window {id}: {e}");
-    }
+    niri.action("move-window-to-monitor", &["--id", &id_str, target])
+        .with_context(|| format!("moving wl-mirror window {id} to {target}"))?;
+    niri.action("fullscreen-window", &["--id", &id_str])
+        .with_context(|| format!("fullscreening wl-mirror window {id}"))?;
     tracing::info!("steered wl-mirror window {id} to {target} fullscreen");
     Ok(())
 }
@@ -985,18 +1461,22 @@ fn steer_window(niri: &Niri, id: u64, target: &str) -> Result<()> {
 fn spawn_mirror(
     tool: &std::path::Path,
     src: &str,
-    fullscreen_target: Option<&str>,
     stream: bool,
     scaling: Option<&str>,
+    region: Option<&Region>,
 ) -> Result<Child> {
     let mut cmd = Command::new(tool);
     // wl-mirror parses `[options] <output>`: options must precede the output
     // name, otherwise it exits with "unexpected trailing arguments".
-    if let Some(tgt) = fullscreen_target {
-        cmd.args(["--fullscreen-output", tgt]);
-    }
+    //
+    // Deliberately no `--fullscreen-output`: NiriDM moves the window and then
+    // toggles fullscreen itself. Asking wl-mirror to fullscreen *and* toggling
+    // afterwards would leave the mirror windowed (the toggle turns it off).
     if let Some(s) = scaling {
         cmd.args(["--scaling", s]);
+    }
+    if let Some(region) = region {
+        cmd.arg("--region").arg(region.wl_arg());
     }
     if stream {
         cmd.arg("--stream");
@@ -1323,4 +1803,27 @@ config {
         println!("created {}", paths.config.display());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Region;
+
+    #[test]
+    fn app_region_uses_global_coordinates_and_clamps_to_the_output() {
+        let bounds = (3840.0, 0.0, 2880.0, 1800.0);
+
+        assert_eq!(
+            Region::from_layout(100.0, 100.0, 800.0, 600.0, bounds).map(Region::wl_arg),
+            Some("3940,100 800x600".to_owned())
+        );
+        assert_eq!(
+            Region::from_layout(2500.0, 100.0, 800.0, 600.0, bounds).map(Region::wl_arg),
+            Some("6340,100 380x600".to_owned())
+        );
+        assert_eq!(
+            Region::from_layout(4000.0, 100.0, 800.0, 600.0, bounds),
+            None
+        );
+    }
 }

@@ -115,7 +115,7 @@ impl Field {
             Field::Arrangement => "Arrangement",
             Field::MirrorFrom => "Mirror from",
             Field::MirrorWorkspace => "Workspace filter",
-            Field::MirrorApp => "App filter",
+            Field::MirrorApp => "App only",
             Field::MirrorScaling => "Mirror scaling",
             Field::MirrorHideBar => "Hide bar",
             Field::MirrorHideNotification => "Hide notifications",
@@ -174,13 +174,13 @@ pub struct Screen {
     pub arrangement: Arrangement,
     /// Source connector when `arrangement == Mirror`.
     pub mirror_from: Option<String>,
-    /// Only mirror while this workspace is focused (`None` = mirror always).
+    /// Only mirror while this workspace is shown (`None` = mirror always).
     pub mirror_workspace: Option<String>,
-    /// Only mirror while an app with this ID is focused (`None` = always).
+    /// Capture only this app's window (`None` = whole source output).
     pub mirror_app: Option<String>,
     /// Workspace names offered for the workspace filter.
     pub mirror_workspaces: Vec<String>,
-    /// App IDs offered for the app filter.
+    /// App IDs offered for app-only mirroring.
     pub mirror_apps: Vec<String>,
     pub mirror_scaling: MirrorScaleMode,
     /// Hide the status bar while mirroring (restored when mirroring ends).
