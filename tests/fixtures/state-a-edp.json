@@ -1,0 +1,32 @@
+{
+  "eDP-1": {
+    "name": "eDP-1",
+    "make": "BOE",
+    "model": "NE140FHM-N61",
+    "serial": null,
+    "physical_size": [
+      310,
+      200
+    ],
+    "modes": [
+      {
+        "width": 2880,
+        "height": 1800,
+        "refresh_rate": 90000,
+        "is_preferred": true
+      }
+    ],
+    "current_mode": 0,
+    "is_custom_mode": false,
+    "vrr_supported": false,
+    "vrr_enabled": false,
+    "logical": {
+      "x": 3840,
+      "y": 0,
+      "width": 2880,
+      "height": 1800,
+      "scale": 1.5,
+      "transform": "Normal"
+    }
+  }
+}

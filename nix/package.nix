@@ -8,7 +8,7 @@
 
 pkgs.rustPlatform.buildRustPackage rec {
   pname = "niri-dm";
-  version = "0.1.9";
+  version = "0.1.10";
   inherit src;
 
   cargoLock.lockFile = "${src}/Cargo.lock";

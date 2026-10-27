@@ -36,7 +36,8 @@ case "$*" in
   "msg --json windows")
     case "${NDM_MOCK_WINDOWS:-none}" in
       mirror)
-        printf '%s\n' '[{"id":42,"title":"wl-mirror \u2014 DP-1","app_id":"wl-mirror","pid":9999,"workspace_id":1,"is_focused":false}]' ;;
+        mw=${NDM_MOCK_MIRROR_W:-2880}; mh=${NDM_MOCK_MIRROR_H:-1800}
+        printf '%s\n' "[{\"id\":42,\"title\":\"wl-mirror \\u2014 DP-1\",\"app_id\":\"wl-mirror\",\"pid\":9999,\"workspace_id\":1,\"is_focused\":false,\"layout\":{\"tile_size\":[$mw,$mh],\"window_size\":[$mw,$mh]}}]" ;;
       focus)
         app=$(cat "${NDM_MOCK_APP:-/dev/null}" 2>/dev/null || true)
         if [ -n "$app" ]; then
@@ -53,12 +54,13 @@ case "$*" in
         [ -n "$floating" ] || floating=0
         x=${NDM_MOCK_APP_X:-100}; y=${NDM_MOCK_APP_Y:-100}
         w=${NDM_MOCK_APP_W:-800}; h=${NDM_MOCK_APP_H:-600}
+        mw=${NDM_MOCK_MIRROR_W:-2880}; mh=${NDM_MOCK_MIRROR_H:-1800}
         if [ "$floating" = 1 ]; then
           f=true; pos="[$x,$y]"
         else
           f=false; pos=null
         fi
-        printf '%s\n' "[{\"id\":7,\"title\":\"app\",\"app_id\":\"$app\",\"pid\":1234,\"workspace_id\":$ws,\"is_focused\":true,\"is_floating\":$f,\"layout\":{\"pos_in_scrolling_layout\":[1,1],\"tile_size\":[$w,$h],\"window_size\":[$w,$h],\"tile_pos_in_workspace_view\":$pos,\"window_offset_in_tile\":[0,0]}},{\"id\":42,\"title\":\"wl-mirror — DP-1\",\"app_id\":\"wl-mirror\",\"pid\":9999,\"workspace_id\":1,\"is_focused\":false}]" ;;
+        printf '%s\n' "[{\"id\":7,\"title\":\"app\",\"app_id\":\"$app\",\"pid\":1234,\"workspace_id\":$ws,\"is_focused\":true,\"is_floating\":$f,\"layout\":{\"pos_in_scrolling_layout\":[1,1],\"tile_size\":[$w,$h],\"window_size\":[$w,$h],\"tile_pos_in_workspace_view\":$pos,\"window_offset_in_tile\":[0,0]}},{\"id\":42,\"title\":\"wl-mirror — DP-1\",\"app_id\":\"wl-mirror\",\"pid\":9999,\"workspace_id\":1,\"is_focused\":false,\"layout\":{\"tile_size\":[$mw,$mh],\"window_size\":[$mw,$mh]}}]" ;;
       *) printf '%s\n' '[]' ;;
     esac ;;
 

@@ -37,8 +37,10 @@ Implemented:
   transform, and VRR, with *apply* — no launcher required.
 - **Popup timeout** — the popup dismisses itself after `popup-timeout` seconds
   so an unattended prompt can never block the daemon.
-- **Mirror** — `ndm mirror SRC [DST]` spawns `wl-mirror` and steers its window
-  to the target output, fullscreen, via the event stream.
+- **Mirror** — `ndm mirror SRC [DST]` spawns `wl-mirror` with
+  `--fullscreen-output DST`, so the mirror window opens fullscreen on the
+  target output. The event stream is used to find the window and move it if a
+  compositor places it on the wrong output.
 - **Workspace routing** — `ndm route WS OUT` pins a workspace to an output
   permanently (generated `workspace` blocks); `ndm switch WS OUT` moves it
   transiently without writing KDL.
@@ -144,9 +146,9 @@ rejected by niri is rolled back to the previous content.
   workspaces appear where.
 - **Mirror** requires `wl-mirror` on `PATH` (or set `mirror-tool` /
   `--wl-mirror`). The NixOS and home-manager modules install `pkgs.wl-mirror`
-  by default (`programs.NiriDM.mirror.enable`). NDM steers the `wl-mirror`
-  window by PID (fallback: app-id/title match), so it survives races with
-  niri's focus, then fullscreens it on the destination output. The TUI's
+  by default (`programs.NiriDM.mirror.enable`). NDM spawns `wl-mirror` with
+  `--fullscreen-output` for the destination, and finds the window by PID
+  (fallback: app-id/title match) to move it if it landed elsewhere. The TUI's
   *Mirror* arrangement launches `ndm mirror` detached, so the mirror keeps
   running after the settings window closes. NDM polls the output list once a
   second; if either the source or destination output is unplugged or switched

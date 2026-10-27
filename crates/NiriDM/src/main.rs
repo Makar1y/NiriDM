@@ -930,16 +930,17 @@ fn run_mirror(paths: &NiriDMPaths, niri: &Niri, src: &str, opts: &MirrorOptions)
     let mut child = spawn_mirror(
         &tool,
         src,
+        &target,
         use_stream,
         opts.scaling,
         initial_region.as_ref(),
     )?;
     let mut stream = EventStream::open()?;
     let mut current_window: Option<u64> = None;
-    // Window we already moved + fullscreened. Steering is a one-shot per
-    // window: `fullscreen-window` *toggles*, so re-steering on every
+    // Window we already placed on the target. This is a one-shot per window:
+    // `fullscreen-window` *toggles*, so re-checking on every
     // `WindowOpenedOrChanged` (including the ones our own actions cause)
-    // would immediately take the mirror back out of fullscreen.
+    // could take a correctly fullscreened mirror back out of fullscreen.
     let mut steered_window: Option<u64> = None;
     let mut frozen = false;
     let mut last_output_check = Instant::now() - Duration::from_secs(1);
@@ -1022,14 +1023,14 @@ fn run_mirror(paths: &NiriDMPaths, niri: &Niri, src: &str, opts: &MirrorOptions)
             }
         }
 
-        // Steer a window that has not been steered yet. Retrying on the next
-        // tick covers the race where the window exists but niri is not ready
-        // to act on it yet.
+        // Make sure the mirror window is on the target output and fullscreen.
+        // Retrying on the next tick covers the race where the window exists
+        // but niri is not ready to act on it yet.
         if let Some(id) = current_window {
             if steered_window != Some(id) {
-                match steer_window(niri, id, &target) {
+                match ensure_mirror_on_target(niri, id, &target) {
                     Ok(()) => steered_window = Some(id),
-                    Err(e) => tracing::warn!("could not steer wl-mirror window {id} yet: {e:#}"),
+                    Err(e) => tracing::warn!("could not place wl-mirror window {id} yet: {e:#}"),
                 }
             }
         }
@@ -1134,7 +1135,14 @@ fn run_mirror(paths: &NiriDMPaths, niri: &Niri, src: &str, opts: &MirrorOptions)
                 tracing::warn!("wl-mirror died ({status}); restarting");
                 std::thread::sleep(Duration::from_secs(1));
                 let region = app_capture.as_ref().and_then(AppCapture::region);
-                child = spawn_mirror(&tool, src, use_stream, opts.scaling, region.as_ref())?;
+                child = spawn_mirror(
+                    &tool,
+                    src,
+                    &target,
+                    use_stream,
+                    opts.scaling,
+                    region.as_ref(),
+                )?;
                 current_window = None;
                 steered_window = None;
                 frozen = false;
@@ -1444,23 +1452,95 @@ fn service_app_capture(
     Ok(true)
 }
 
-/// Move the given window onto `target` and fullscreen it.
+/// Current window and the output its workspace belongs to.
+fn mirror_window_state(niri: &Niri, id: u64) -> Result<(ndm_core::events::Window, Option<String>)> {
+    let windows = niri.windows().context("querying niri windows")?;
+    let window = windows
+        .into_iter()
+        .find(|w| w.id == id)
+        .with_context(|| format!("wl-mirror window {id} is gone"))?;
+    let workspaces = niri.workspaces().context("querying niri workspaces")?;
+    let output = window
+        .workspace_id
+        .and_then(|wsid| workspaces.iter().find(|ws| ws.id == wsid))
+        .and_then(|ws| ws.output.clone());
+    Ok((window, output))
+}
+
+/// Whether the window is still smaller than `target`'s logical area.
 ///
-/// `fullscreen-window` toggles, so callers must only invoke this once per
-/// window (see `steered_window` in [`run_mirror`]).
-fn steer_window(niri: &Niri, id: u64, target: &str) -> Result<()> {
+/// A fullscreen window's tile size equals the output size. This is used only
+/// after giving wl-mirror's own `--fullscreen-output` request time to apply.
+fn window_is_smaller_than_output(
+    niri: &Niri,
+    window: &ndm_core::events::Window,
+    target: &str,
+) -> Result<bool> {
+    let outputs = niri.outputs().context("querying niri outputs")?;
+    let Some(logical) = outputs
+        .iter()
+        .find(|o| o.name == target)
+        .and_then(|o| o.logical.as_ref())
+    else {
+        return Ok(false);
+    };
+    let (w, h) = window.layout.tile_size;
+    Ok(w + 1.0 < f64::from(logical.width) || h + 1.0 < f64::from(logical.height))
+}
+
+/// Ensure the wl-mirror window is fullscreen on `target`.
+///
+/// wl-mirror is spawned with `--fullscreen-output target`, so normally it opens
+/// fullscreen there and this is a no-op. If the compositor placed it on another
+/// output, move it and then fullscreen it. A fullscreen window cannot be moved,
+/// so a successful move means it was not fullscreen and toggling fullscreen is
+/// safe.
+///
+/// If the window is already on the target, give wl-mirror's fullscreen request
+/// a moment to apply before checking the window size. This avoids toggling a
+/// correctly fullscreened window back into a tile.
+fn ensure_mirror_on_target(niri: &Niri, id: u64, target: &str) -> Result<()> {
+    let (window, output) = mirror_window_state(niri, id)?;
     let id_str = id.to_string();
-    niri.action("move-window-to-monitor", &["--id", &id_str, target])
-        .with_context(|| format!("moving wl-mirror window {id} to {target}"))?;
-    niri.action("fullscreen-window", &["--id", &id_str])
-        .with_context(|| format!("fullscreening wl-mirror window {id}"))?;
-    tracing::info!("steered wl-mirror window {id} to {target} fullscreen");
+
+    if output.as_deref() != Some(target) {
+        niri.action("move-window-to-monitor", &["--id", &id_str, target])
+            .with_context(|| format!("moving wl-mirror window {id} to {target}"))?;
+        // The move and wl-mirror's own fullscreen request can race. Give niri a
+        // moment, then only toggle fullscreen if the window is still smaller
+        // than the output; otherwise wl-mirror's request already won and
+        // toggling would take the mirror back out of fullscreen.
+        std::thread::sleep(Duration::from_millis(200));
+        let (window, output) = mirror_window_state(niri, id)?;
+        if output.as_deref() != Some(target) {
+            bail!("wl-mirror window {id} did not move to {target}");
+        }
+        if window_is_smaller_than_output(niri, &window, target)? {
+            niri.action("fullscreen-window", &["--id", &id_str])
+                .with_context(|| format!("fullscreening wl-mirror window {id}"))?;
+            tracing::info!("moved wl-mirror window {id} to {target} and fullscreened it");
+        }
+        return Ok(());
+    }
+
+    if window_is_smaller_than_output(niri, &window, target)? {
+        std::thread::sleep(Duration::from_millis(200));
+        let (window, output) = mirror_window_state(niri, id)?;
+        if output.as_deref() == Some(target)
+            && window_is_smaller_than_output(niri, &window, target)?
+        {
+            niri.action("fullscreen-window", &["--id", &id_str])
+                .with_context(|| format!("fullscreening wl-mirror window {id}"))?;
+            tracing::info!("fullscreened wl-mirror window {id} on {target}");
+        }
+    }
     Ok(())
 }
 
 fn spawn_mirror(
     tool: &std::path::Path,
     src: &str,
+    target: &str,
     stream: bool,
     scaling: Option<&str>,
     region: Option<&Region>,
@@ -1469,9 +1549,11 @@ fn spawn_mirror(
     // wl-mirror parses `[options] <output>`: options must precede the output
     // name, otherwise it exits with "unexpected trailing arguments".
     //
-    // Deliberately no `--fullscreen-output`: NiriDM moves the window and then
-    // toggles fullscreen itself. Asking wl-mirror to fullscreen *and* toggling
-    // afterwards would leave the mirror windowed (the toggle turns it off).
+    // Let wl-mirror request fullscreen on the destination output itself. This
+    // is more reliable than moving a windowed surface and toggling fullscreen
+    // afterwards: the window is created fullscreen in one step, with no
+    // windowed flash or race with the initial configure.
+    cmd.arg("--fullscreen-output").arg(target);
     if let Some(s) = scaling {
         cmd.args(["--scaling", s]);
     }
