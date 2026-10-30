@@ -181,9 +181,7 @@ fn item_rows(screen: &Screen, focus: usize) -> Vec<ListItem<'_>> {
         .map(|(i, field)| {
             let (label, value) = field_row(screen, *field);
             let hint = match field {
-                Field::Vrr | Field::MirrorHideBar | Field::MirrorHideNotification => {
-                    "toggle".to_string()
-                }
+                Field::Vrr => "toggle".to_string(),
                 Field::Position => "←/→ nudge · r reset".to_string(),
                 _ => "←/→ change".to_string(),
             };
@@ -213,25 +211,7 @@ fn field_row(screen: &Screen, field: Field) -> (String, String) {
             .mirror_workspace
             .clone()
             .unwrap_or_else(|| "any workspace".into()),
-        Field::MirrorApp => screen
-            .mirror_app
-            .clone()
-            .unwrap_or_else(|| "whole output".into()),
         Field::MirrorScaling => screen.mirror_scaling.label().to_string(),
-        Field::MirrorHideBar => {
-            if screen.mirror_hide_bar {
-                "yes".to_string()
-            } else {
-                "no".to_string()
-            }
-        }
-        Field::MirrorHideNotification => {
-            if screen.mirror_hide_notification {
-                "yes".to_string()
-            } else {
-                "no".to_string()
-            }
-        }
         Field::Resolution => screen.mode_string().unwrap_or_else(|| "off".into()),
         Field::Scale => format!("{:.2}", screen.scale),
         Field::Position => {

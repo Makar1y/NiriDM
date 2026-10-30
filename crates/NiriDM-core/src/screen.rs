@@ -96,12 +96,7 @@ pub enum Field {
     Arrangement,
     MirrorFrom,
     MirrorWorkspace,
-    MirrorApp,
     MirrorScaling,
-    /// Hide the status bar while mirroring.
-    MirrorHideBar,
-    /// Suppress notifications while mirroring.
-    MirrorHideNotification,
     Resolution,
     Scale,
     Position,
@@ -115,10 +110,7 @@ impl Field {
             Field::Arrangement => "Arrangement",
             Field::MirrorFrom => "Mirror from",
             Field::MirrorWorkspace => "Workspace filter",
-            Field::MirrorApp => "App only",
             Field::MirrorScaling => "Mirror scaling",
-            Field::MirrorHideBar => "Hide bar",
-            Field::MirrorHideNotification => "Hide notifications",
             Field::Resolution => "Resolution",
             Field::Scale => "Scale",
             Field::Position => "Position",
@@ -176,17 +168,9 @@ pub struct Screen {
     pub mirror_from: Option<String>,
     /// Only mirror while this workspace is shown (`None` = mirror always).
     pub mirror_workspace: Option<String>,
-    /// Capture only this app's window (`None` = whole source output).
-    pub mirror_app: Option<String>,
     /// Workspace names offered for the workspace filter.
     pub mirror_workspaces: Vec<String>,
-    /// App IDs offered for app-only mirroring.
-    pub mirror_apps: Vec<String>,
     pub mirror_scaling: MirrorScaleMode,
-    /// Hide the status bar while mirroring (restored when mirroring ends).
-    pub mirror_hide_bar: bool,
-    /// Suppress notifications while mirroring (restored when mirroring ends).
-    pub mirror_hide_notification: bool,
     /// Index into the target's `modes`.
     pub mode_idx: usize,
     pub scale: f64,
@@ -229,12 +213,8 @@ impl Screen {
             arrangement: Arrangement::ExtendRight,
             mirror_from,
             mirror_workspace: None,
-            mirror_app: None,
             mirror_workspaces: Vec::new(),
-            mirror_apps: Vec::new(),
             mirror_scaling: MirrorScaleMode::Fit,
-            mirror_hide_bar: false,
-            mirror_hide_notification: false,
             mode_idx,
             scale,
             transform,
@@ -329,10 +309,7 @@ impl Screen {
         if self.arrangement == Arrangement::Mirror {
             fields.push(Field::MirrorFrom);
             fields.push(Field::MirrorWorkspace);
-            fields.push(Field::MirrorApp);
             fields.push(Field::MirrorScaling);
-            fields.push(Field::MirrorHideBar);
-            fields.push(Field::MirrorHideNotification);
         }
         if self.arrangement != Arrangement::Off {
             fields.push(Field::Resolution);
@@ -432,20 +409,10 @@ impl Screen {
                     delta,
                 )
             }
-            Field::MirrorApp => {
-                self.mirror_app = cycle_filter(self.mirror_app.clone(), &self.mirror_apps, delta)
-            }
             Field::MirrorScaling => {
-                let idx = self
-                    .mirror_scaling
-                    .index()
-                    .saturating_add(1)
-                    .min(MirrorScaleMode::ALL.len() - 1);
-                self.mirror_scaling = MirrorScaleMode::ALL[idx];
-            }
-            Field::MirrorHideBar => self.mirror_hide_bar = !self.mirror_hide_bar,
-            Field::MirrorHideNotification => {
-                self.mirror_hide_notification = !self.mirror_hide_notification
+                let cur = self.mirror_scaling.index() as i32;
+                let n = MirrorScaleMode::ALL.len() as i32;
+                self.mirror_scaling = MirrorScaleMode::ALL[(cur + delta).rem_euclid(n) as usize];
             }
         }
     }
@@ -724,34 +691,36 @@ mod tests {
     fn mirror_filter_fields_appear_only_for_mirror() {
         let mut s = screen();
         assert!(!s.fields().contains(&Field::MirrorWorkspace));
-        assert!(!s.fields().contains(&Field::MirrorHideBar));
-        assert!(!s.fields().contains(&Field::MirrorHideNotification));
+        assert!(!s.fields().contains(&Field::MirrorScaling));
         s.arrangement = Arrangement::Mirror;
         assert!(s.fields().contains(&Field::MirrorWorkspace));
-        assert!(s.fields().contains(&Field::MirrorApp));
-        assert!(s.fields().contains(&Field::MirrorHideBar));
-        assert!(s.fields().contains(&Field::MirrorHideNotification));
+        assert!(s.fields().contains(&Field::MirrorScaling));
+    }
 
-        // Test toggles
+    #[test]
+    fn mirror_scaling_cycles_both_directions() {
+        let mut s = screen();
+        s.arrangement = Arrangement::Mirror;
         s.field = s
             .fields()
             .iter()
-            .position(|f| *f == Field::MirrorHideBar)
+            .position(|f| *f == Field::MirrorScaling)
             .unwrap();
-        assert!(!s.mirror_hide_bar);
+
+        assert_eq!(s.mirror_scaling, MirrorScaleMode::Fit);
         s.adjust(1);
-        assert!(s.mirror_hide_bar);
+        assert_eq!(s.mirror_scaling, MirrorScaleMode::Cover);
+        s.adjust(1);
+        assert_eq!(s.mirror_scaling, MirrorScaleMode::Exact);
+        s.adjust(1);
+        assert_eq!(s.mirror_scaling, MirrorScaleMode::Fit);
+
         s.adjust(-1);
-        assert!(!s.mirror_hide_bar);
-
-        s.field = s
-            .fields()
-            .iter()
-            .position(|f| *f == Field::MirrorHideNotification)
-            .unwrap();
-        assert!(!s.mirror_hide_notification);
-        s.adjust(1);
-        assert!(s.mirror_hide_notification);
+        assert_eq!(s.mirror_scaling, MirrorScaleMode::Exact);
+        s.adjust(-1);
+        assert_eq!(s.mirror_scaling, MirrorScaleMode::Cover);
+        s.adjust(-1);
+        assert_eq!(s.mirror_scaling, MirrorScaleMode::Fit);
     }
 
     #[test]

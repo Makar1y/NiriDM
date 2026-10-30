@@ -7,7 +7,6 @@ R=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 F=$R/tests/fixtures
 NDM=$R/target/debug/ndm
 H=$(mktemp -d "${TMPDIR:-/tmp}/niridm-m4b.XXXXXX")
-CFG=$H/NiriDM
 ACTIONS=$H/actions.log
 ARGS=$H/mirror.args
 WS=$H/ws
@@ -72,30 +71,6 @@ fi
 grep -q "cannot mirror an output onto itself" "$H/self.txt" && echo "OK: self-mirror rejected"
 test ! -s "$ACTIONS" && echo "OK: no actions issued"
 test ! -s "$ARGS" && echo "OK: wl-mirror was not started"
-
-echo
-echo "== --hide-bar / --hide-notification run their commands and restore on SIGTERM =="
-cat >"$CFG/config.kdl" <<EOF
-config {
-    mirror-hide-bar-cmd "echo hide-bar >> '$H/hide.log'"
-    mirror-show-bar-cmd "echo show-bar >> '$H/hide.log'"
-    mirror-hide-notification-cmd "echo hide-notif >> '$H/hide.log'"
-    mirror-show-notification-cmd "echo show-notif >> '$H/hide.log'"
-}
-EOF
-rm -f "$H/hide.log"
-"$NDM" mirror DP-1 eDP-1 --hide-bar --hide-notification \
-  --wl-mirror "$F/fake-wlmirror" 2>"$H/hide.txt" &
-pid=$!
-sleep 1
-kill "$pid" 2>/dev/null || true
-wait "$pid" 2>/dev/null || true
-echo "--- hide/show commands:"
-cat "$H/hide.log" 2>/dev/null || echo "(none)"
-grep -qx hide-bar "$H/hide.log" && echo "OK: bar hide command ran"
-grep -qx hide-notif "$H/hide.log" && echo "OK: notification hide command ran"
-grep -qx show-bar "$H/hide.log" && echo "OK: bar restored when the mirror was stopped"
-grep -qx show-notif "$H/hide.log" && echo "OK: notifications restored when the mirror was stopped"
 
 echo
 echo "ALL SMOKE CHECKS PASSED"

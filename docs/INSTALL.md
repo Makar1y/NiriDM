@@ -19,8 +19,10 @@ Optional, for specific features:
 - a terminal to host the settings popup — `alacritty`, `foot`, `kitty`,
   `wezterm`, `ghostty`, or `xterm` (one is enough; any terminal works via
   `popup-terminals`); otherwise a launcher is used as a fallback:
-  `fuzzel`, `wofi`, `bemenu`, `yad`, `zenity`, or `dmenu`; and
-- `wl-mirror` for `ndm mirror`.
+  `fuzzel`, `wofi`, `bemenu`, `yad`, `zenity`, or `dmenu`;
+- `wl-mirror` for `ndm mirror`; and
+- Noctalia (v5 or legacy v4) for automatic wallpaper sync on hotplug
+  (`sync-wallpaper`, enabled by default).
 
 ## Option A — NixOS (flake module)
 

@@ -17,6 +17,7 @@ use ndm_core::kdl::{generate_monitors_kdl, parse_layouts};
 use ndm_core::layout::{find_matching, Layout};
 use ndm_core::paths::NiriDMPaths;
 use ndm_core::popup::{CommandPopup, LogPopup, PopupContext, PopupProvider};
+use ndm_core::wallpaper;
 use ndm_core::Niri;
 
 #[derive(Parser)]
@@ -137,6 +138,7 @@ fn main() -> Result<()> {
                 fired.as_ref(),
                 &previous,
                 have_baseline,
+                prefs.sync_wallpaper,
                 &*popup,
             ) {
                 if cli.once {
@@ -193,9 +195,19 @@ fn step(
     fired: Option<&String>,
     previous: &[String],
     have_baseline: bool,
+    sync_wallpaper: bool,
     popup: &dyn PopupProvider,
 ) -> Result<()> {
-    if fired.is_some() && have_baseline {
+    let hotplug = fired.is_some() && have_baseline;
+    if hotplug && sync_wallpaper {
+        // Do this before the popup so the new output already shows the
+        // current wallpaper while the user decides what to do.
+        if let Err(e) = wallpaper::sync_new_outputs(outputs, previous) {
+            tracing::warn!("could not sync wallpaper: {e:#}");
+        }
+    }
+
+    if hotplug {
         let new: Vec<String> = outputs
             .iter()
             .filter(|o| !previous.iter().any(|p| p == &o.name))
@@ -228,6 +240,14 @@ fn step(
         }
         Err(_) => {
             tracing::debug!("no layout matches the connected set; leaving outputs as they are")
+        }
+    }
+
+    // Retry after applying the layout: the popup may have just switched a new
+    // output on, and syncing again is a no-op when it already matches.
+    if hotplug && sync_wallpaper {
+        if let Err(e) = wallpaper::sync_new_outputs(outputs, previous) {
+            tracing::warn!("could not sync wallpaper: {e:#}");
         }
     }
     Ok(())

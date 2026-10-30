@@ -8,10 +8,7 @@
 //!     poll-interval-ms 1000
 //!     settle-ms 750
 //!     mirror-tool "wl-mirror"
-//!     mirror-hide-bar-cmd "pkill -USR1 waybar"
-//!     mirror-show-bar-cmd "pkill -USR1 waybar"
-//!     mirror-hide-notification-cmd "makoctl mode -a do-not-disturb"
-//!     mirror-show-notification-cmd "makoctl mode -r do-not-disturb"
+//!     sync-wallpaper true
 //! }
 //! ```
 //!
@@ -40,18 +37,9 @@ pub struct Prefs {
     pub settle_ms: u64,
     /// The mirror tool `ndm mirror` spawns (default: `wl-mirror` from PATH).
     pub mirror_tool: Option<PathBuf>,
-    /// Shell command to hide the status bar when mirroring starts.
-    /// Example: `"pkill -USR1 waybar"` (Waybar toggle-visibility signal).
-    pub mirror_hide_bar_cmd: Option<String>,
-    /// Shell command to restore the status bar when mirroring ends.
-    /// Example: `"pkill -USR1 waybar"`.
-    pub mirror_show_bar_cmd: Option<String>,
-    /// Shell command to suppress notifications when mirroring starts.
-    /// Example: `"makoctl mode -a do-not-disturb"`.
-    pub mirror_hide_notification_cmd: Option<String>,
-    /// Shell command to restore notifications when mirroring ends.
-    /// Example: `"makoctl mode -r do-not-disturb"`.
-    pub mirror_show_notification_cmd: Option<String>,
+    /// Copy the wallpaper currently shown on an existing output to a newly
+    /// plugged output (Noctalia v4/v5). Enabled by default.
+    pub sync_wallpaper: bool,
 }
 
 impl Default for Prefs {
@@ -66,10 +54,7 @@ impl Default for Prefs {
             poll_interval_ms: 1000,
             settle_ms: 750,
             mirror_tool: None,
-            mirror_hide_bar_cmd: None,
-            mirror_show_bar_cmd: None,
-            mirror_hide_notification_cmd: None,
-            mirror_show_notification_cmd: None,
+            sync_wallpaper: true,
         }
     }
 }
@@ -152,30 +137,19 @@ impl Prefs {
                             ))
                         }
                     },
-                    "mirror-hide-bar-cmd" => {
-                        prefs.mirror_hide_bar_cmd = Some(string_arg(
-                            "mirror-hide-bar-cmd",
-                            single_arg(child, "mirror-hide-bar-cmd")?,
-                        )?)
-                    }
-                    "mirror-show-bar-cmd" => {
-                        prefs.mirror_show_bar_cmd = Some(string_arg(
-                            "mirror-show-bar-cmd",
-                            single_arg(child, "mirror-show-bar-cmd")?,
-                        )?)
-                    }
-                    "mirror-hide-notification-cmd" => {
-                        prefs.mirror_hide_notification_cmd = Some(string_arg(
-                            "mirror-hide-notification-cmd",
-                            single_arg(child, "mirror-hide-notification-cmd")?,
-                        )?)
-                    }
-                    "mirror-show-notification-cmd" => {
-                        prefs.mirror_show_notification_cmd = Some(string_arg(
-                            "mirror-show-notification-cmd",
-                            single_arg(child, "mirror-show-notification-cmd")?,
-                        )?)
-                    }
+                    "sync-wallpaper" => match child.args.as_slice() {
+                        [Val::Str(s)] if s.eq_ignore_ascii_case("true") => {
+                            prefs.sync_wallpaper = true
+                        }
+                        [Val::Str(s)] if s.eq_ignore_ascii_case("false") => {
+                            prefs.sync_wallpaper = false
+                        }
+                        _ => {
+                            return Err(NdError::Other(
+                                "`sync-wallpaper` needs true or false".into(),
+                            ))
+                        }
+                    },
                     other => tracing::warn!("unknown config key `{other}`"),
                 }
             }
@@ -189,15 +163,6 @@ fn string_arg(what: &str, v: &Val) -> Result<String> {
         Val::Str(s) => Ok(s.clone()),
         Val::Num(n) => Err(NdError::Other(format!(
             "`{what}` needs string arguments, found number {n}"
-        ))),
-    }
-}
-
-fn single_arg<'a>(node: &'a crate::kdl::Node, what: &str) -> Result<&'a Val> {
-    match node.args.as_slice() {
-        [v] => Ok(v),
-        _ => Err(NdError::Other(format!(
-            "`{what}` needs exactly one string argument"
         ))),
     }
 }
@@ -224,6 +189,7 @@ mod tests {
         assert!(p.remember_new_monitors);
         assert_eq!(p.poll_interval_ms, 1000);
         assert_eq!(p.settle_ms, 750);
+        assert!(p.sync_wallpaper);
     }
 
     #[test]
@@ -237,10 +203,7 @@ mod tests {
                 poll-interval-ms 250
                 settle-ms 100
                 mirror-tool "mymirror"
-                mirror-hide-bar-cmd "pkill -USR1 waybar"
-                mirror-show-bar-cmd "pkill -USR1 waybar"
-                mirror-hide-notification-cmd "makoctl mode -a do-not-disturb"
-                mirror-show-notification-cmd "makoctl mode -r do-not-disturb"
+                sync-wallpaper false
             }
             "#,
         )
@@ -254,16 +217,7 @@ mod tests {
         assert_eq!(p.poll_interval_ms, 250);
         assert_eq!(p.settle_ms, 100);
         assert_eq!(p.mirror_tool.as_deref(), Some(Path::new("mymirror")));
-        assert_eq!(p.mirror_hide_bar_cmd.as_deref(), Some("pkill -USR1 waybar"));
-        assert_eq!(p.mirror_show_bar_cmd.as_deref(), Some("pkill -USR1 waybar"));
-        assert_eq!(
-            p.mirror_hide_notification_cmd.as_deref(),
-            Some("makoctl mode -a do-not-disturb")
-        );
-        assert_eq!(
-            p.mirror_show_notification_cmd.as_deref(),
-            Some("makoctl mode -r do-not-disturb")
-        );
+        assert!(!p.sync_wallpaper);
     }
 
     #[test]
@@ -285,6 +239,7 @@ mod tests {
         assert!(Prefs::parse(r#"config { popup-timeout "soon" }"#).is_err());
         assert!(Prefs::parse(r#"config { remember-new-monitors maybe }"#).is_err());
         assert!(Prefs::parse(r#"config { popup-terminals }"#).is_err());
+        assert!(Prefs::parse(r#"config { sync-wallpaper maybe }"#).is_err());
     }
 
     #[test]

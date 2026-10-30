@@ -23,7 +23,7 @@ for arg in "$@"; do
         exit 1
       fi
       case "$arg" in
-        --fullscreen-output|--region|--scaling|--title|--backend|--transform)
+        --fullscreen-output|--scaling|--title|--backend|--transform)
           expect=1 ;;
       esac
       [ "$arg" = "--stream" ] && stream=1

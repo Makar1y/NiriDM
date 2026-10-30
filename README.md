@@ -8,7 +8,7 @@ All state lives in `~/.config/NiriDM/` (KDL). Commands talk to niri over its
 IPC (`niri msg` / `niri msg --json`) and apply configuration by writing an
 `include`d `monitors.kdl`, which niri (≥ 26.04) live-reloads.
 
-> **Early development (v0.1.0).** The CLI and on-disk format may still change.
+> **Early development (v0.1.11).** The CLI and on-disk format may still change.
 
 ## Requirements
 
@@ -19,6 +19,7 @@ IPC (`niri msg` / `niri msg --json`) and apply configuration by writing an
   or `xterm`), or an interactive launcher (`fuzzel`, `wofi`, `bemenu`, `yad`,
   `zenity`, `dmenu`) as fallback — see [Configuration](#configuration).
 - `wl-mirror` for `ndm mirror`.
+- Optional: Noctalia (v5 or legacy v4) for automatic wallpaper sync on hotplug.
 
 ## Status
 
@@ -44,6 +45,9 @@ Implemented:
 - **Workspace routing** — `ndm route WS OUT` pins a workspace to an output
   permanently (generated `workspace` blocks); `ndm switch WS OUT` moves it
   transiently without writing KDL.
+- **Wallpaper sync** — when a monitor is plugged in, the daemon copies the
+  wallpaper currently shown on an existing output to the new connector
+  (Noctalia v5/v4). Disable with `sync-wallpaper false`.
 - **Nix packaging + modules** — flake package, NixOS module
   (`programs.NiriDM`), home-manager module (`programs.NiriDM`).
 
@@ -105,7 +109,7 @@ ndm init                         # create config.kdl/layouts.kdl/monitors.kdl if
 ndm capture <name>               # save current arrangement as a layout
 ndm apply <name|auto>            # apply a layout (auto = match connected set)
 ndm monitor <output> on|off      # enable/disable an output in the active layout
-ndm mirror <src> [dst] [--workspace W] [--app APP] [--hide-bar] [--hide-notification]  # mirror src onto dst; --app captures only that window
+ndm mirror <src> [dst] [--workspace W] [--scaling fit|cover|exact]  # mirror src onto dst
 ndm route <workspace> [output]   # pin a workspace to an output (no output = unpin)
 ndm switch <workspace> <output>  # move workspace to output transiently
 ndm popup [output]  [--timeout S]
@@ -128,6 +132,7 @@ config {
     popup-terminals "alacritty" "foot" "kitty" "wezterm" "ghostty" "xterm"
     remember-new-monitors true  // auto-apply without prompting when true
     mirror-tool "wl-mirror"
+    sync-wallpaper true         // copy the current wallpaper to a new output
 }
 ```
 
@@ -154,14 +159,6 @@ rejected by niri is rolled back to the previous content.
   second; if either the source or destination output is unplugged or switched
   off, it closes the `wl-mirror` window and exits (niri 26.04 has no
   output-change event).
-- **Hiding UI while mirroring** — `--hide-bar` and `--hide-notification`
-  auto-detect Noctalia v5 (`noctalia`), Noctalia v4 (`noctalia-shell`), Waybar,
-  and Mako/Dunst/SwayNC. The matching restore command runs when the mirror
-  window closes, when `ndm mirror` is stopped with Ctrl-C/SIGTERM/SIGHUP, or
-  when startup fails. Override detection with `mirror-hide-bar-cmd` /
-  `mirror-show-bar-cmd` and `mirror-hide-notification-cmd` /
-  `mirror-show-notification-cmd`; set both halves of a pair so the UI can be
-  restored.
 - **Workspace filter** — `--workspace W` (also the TUI's *Workspace filter*
   row) mirrors the source output only while it is showing workspace `W`: when
   the source switches away, wl-mirror is frozen on the last frame; returning
@@ -169,15 +166,12 @@ rejected by niri is rolled back to the previous content.
   (the mirror window itself steals keyboard focus on the target, so the global
   focused workspace is not the source's). With no filter the mirror is
   continuous.
-- **App-only mirror** — `--app APP` (also the TUI's *App only* row) captures
-  only the selected app's window, not the whole workspace. niri 26.04 only
-  exposes on-screen geometry for floating windows, so NDM temporarily floats
-  the app and restores its tiling state when the mirror ends. The app stays on
-  the source output; wl-mirror is given that window's rectangle as its
-  `--region` and follows it when moved or resized. If the app's workspace is
-  not the one currently shown on the source output, the mirror freezes. If
-  several windows share the app id, the focused one (else the first on the
-  source output) is used.
+- **Wallpaper sync** — a newly plugged output can otherwise fall back to
+  Noctalia's default wallpaper instead of the one currently shown. On hotplug
+  the daemon reads the existing output's wallpaper path and applies it to the
+  new connector (`noctalia msg wallpaper-get/set` on v5, `noctalia-shell ipc
+  call wallpaper ...` on v4). Set `sync-wallpaper false` to keep per-output
+  wallpapers untouched.
 - **Popup terminals** are probed in order; the first executable found hosts
   `ndm tui`. With none of them installed the popup is skipped and the daemon
   logs it (there is no other popup UI).

@@ -4,14 +4,7 @@
 #
 # Environment:
 #   NDM_MOCK_STATE       (file) outputs JSON for `msg --json outputs`
-#   NDM_MOCK_WINDOWS     "mirror" => report a wl-mirror window;
-#                        "focus"  => report the focused window from NDM_MOCK_APP;
-#                        "app"    => report the app window + a wl-mirror window
-#   NDM_MOCK_APP         (file) app_id of the focused/app window
-#   NDM_MOCK_FLOATING    (file) 1/0 floating state for the "app" window; the
-#                        toggle-window-floating action flips it
-#   NDM_MOCK_APP_WS      (file) workspace id for the "app" window (default 1)
-#   NDM_MOCK_APP_X/Y/W/H app window geometry when floating (default 100/100/800/600)
+#   NDM_MOCK_WINDOWS     "mirror" => report a wl-mirror window
 #   NDM_MOCK_WS          (file) name of the focused workspace
 #   NDM_MOCK_EVENTS      (file) scripted event stream (see below)
 #   NDM_MOCK_RELOAD      ok|fail|none => trailing ConfigLoaded behaviour
@@ -20,7 +13,6 @@
 # Event script lines:
 #   sleep N      wait N seconds
 #   ws NAME      write NAME (empty to clear) to NDM_MOCK_WS
-#   app NAME     write NAME (empty to clear) to NDM_MOCK_APP
 #   event JSON   emit the JSON object as one event line
 case "$*" in
   "msg --json outputs") cat "${NDM_MOCK_STATE:?}" ;;
@@ -37,30 +29,7 @@ case "$*" in
     case "${NDM_MOCK_WINDOWS:-none}" in
       mirror)
         mw=${NDM_MOCK_MIRROR_W:-2880}; mh=${NDM_MOCK_MIRROR_H:-1800}
-        printf '%s\n' "[{\"id\":42,\"title\":\"wl-mirror \\u2014 DP-1\",\"app_id\":\"wl-mirror\",\"pid\":9999,\"workspace_id\":1,\"is_focused\":false,\"layout\":{\"tile_size\":[$mw,$mh],\"window_size\":[$mw,$mh]}}]" ;;
-      focus)
-        app=$(cat "${NDM_MOCK_APP:-/dev/null}" 2>/dev/null || true)
-        if [ -n "$app" ]; then
-          printf '%s\n' "[{\"id\":7,\"title\":\"focused\",\"app_id\":\"$app\",\"pid\":1234,\"workspace_id\":1,\"is_focused\":true}]"
-        else
-          printf '%s\n' '[]'
-        fi ;;
-      app)
-        app=$(cat "${NDM_MOCK_APP:-/dev/null}" 2>/dev/null || true)
-        [ -n "$app" ] || { printf '%s\n' '[]'; exit 0; }
-        ws=$(cat "${NDM_MOCK_APP_WS:-/dev/null}" 2>/dev/null || true)
-        [ -n "$ws" ] || ws=1
-        floating=$(cat "${NDM_MOCK_FLOATING:-/dev/null}" 2>/dev/null || true)
-        [ -n "$floating" ] || floating=0
-        x=${NDM_MOCK_APP_X:-100}; y=${NDM_MOCK_APP_Y:-100}
-        w=${NDM_MOCK_APP_W:-800}; h=${NDM_MOCK_APP_H:-600}
-        mw=${NDM_MOCK_MIRROR_W:-2880}; mh=${NDM_MOCK_MIRROR_H:-1800}
-        if [ "$floating" = 1 ]; then
-          f=true; pos="[$x,$y]"
-        else
-          f=false; pos=null
-        fi
-        printf '%s\n' "[{\"id\":7,\"title\":\"app\",\"app_id\":\"$app\",\"pid\":1234,\"workspace_id\":$ws,\"is_focused\":true,\"is_floating\":$f,\"layout\":{\"pos_in_scrolling_layout\":[1,1],\"tile_size\":[$w,$h],\"window_size\":[$w,$h],\"tile_pos_in_workspace_view\":$pos,\"window_offset_in_tile\":[0,0]}},{\"id\":42,\"title\":\"wl-mirror — DP-1\",\"app_id\":\"wl-mirror\",\"pid\":9999,\"workspace_id\":1,\"is_focused\":false,\"layout\":{\"tile_size\":[$mw,$mh],\"window_size\":[$mw,$mh]}}]" ;;
+        printf '%s\n' "[{\"id\":42,\"title\":\"wl-mirror \\u2014 DP-1\",\"app_id\":\"wl-mirror\",\"pid\":9999,\"workspace_id\":1,\"is_focused\":false,\"layout\":{\"tile_size\":[$mw,$mh]}}]" ;;
       *) printf '%s\n' '[]' ;;
     esac ;;
 
@@ -73,7 +42,6 @@ case "$*" in
           "" ) : ;;
           sleep\ *) sleep "${line#sleep }" ;;
           ws\ *)    printf '%s' "${line#ws }" > "${NDM_MOCK_WS:?}" ;;
-          app\ *)   printf '%s' "${line#app }" > "${NDM_MOCK_APP:?}" ;;
           event\ *) printf '%s\n' "${line#event }" ;;
         esac
       done < "$NDM_MOCK_EVENTS"
@@ -85,14 +53,6 @@ case "$*" in
       esac
     fi
     sleep 3600 ;;
-
-  "msg action toggle-window-floating"*)
-    echo "$*" >> "${NDM_MOCK_ACTION_LOG:-/dev/null}"
-    if [ -n "${NDM_MOCK_FLOATING:-}" ]; then
-      cur=$(cat "$NDM_MOCK_FLOATING" 2>/dev/null || echo 0)
-      if [ "$cur" = 1 ]; then echo 0 > "$NDM_MOCK_FLOATING"; else echo 1 > "$NDM_MOCK_FLOATING"; fi
-    fi
-    printf '{"Ok":null}\n' ;;
 
   "msg action "*) echo "$*" >> "${NDM_MOCK_ACTION_LOG:-/dev/null}"; printf '{"Ok":null}\n' ;;
   *) printf '{"Ok":null}\n' ;;
